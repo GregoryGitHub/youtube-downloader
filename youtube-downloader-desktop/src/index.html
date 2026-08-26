@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YDownloader - Media Downloader</title>
+    <meta name="description" content="Baixe áudio de alta qualidade do YouTube de forma rápida e simultânea no seu PC." />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script type="module" src="/main.js" defer></script>
+  </head>
+
+  <body>
+    <div class="app-container">
+      
+      <!-- Top Header -->
+      <header class="app-header">
+        <div class="brand">
+          <span class="brand-title">YDownloader</span>
+          <span class="brand-subtitle">Media Downloader</span>
+        </div>
+        
+        <!-- Navigation Tabs -->
+        <nav class="nav-tabs">
+          <button class="tab-btn active" id="tab-btn-download" data-tab="tab-download">
+            Baixar
+          </button>
+          <button class="tab-btn" id="tab-btn-queue" data-tab="tab-queue">
+            Fila <span id="queue-badge" class="badge hidden"></span>
+          </button>
+          <button class="tab-btn" id="tab-btn-settings" data-tab="tab-settings">
+            Ajustes
+          </button>
+        </nav>
+      </header>
+
+      <!-- Main Content Container -->
+      <main class="app-content">
+        
+        <!-- Tab 1: Download -->
+        <section class="tab-content active" id="tab-download">
+          <div class="card card-hero">
+            <h1 class="card-heading">Insira o link do YouTube</h1>
+            <p class="card-subheading">Suporta links de vídeos individuais ou playlists inteiras.</p>
+            
+            <div class="input-group">
+              <input 
+                type="text" 
+                id="url-input" 
+                placeholder="Insira a URL do vídeo ou playlist..." 
+                aria-label="URL do YouTube"
+              />
+            </div>
+            
+            <button class="btn btn-primary" id="btn-enqueue" disabled>
+              Adicionar à Fila
+            </button>
+            
+            <div class="status-box hidden" id="downloader-status-box">
+              <span class="status-indicator"></span>
+              <span id="downloader-status-text">Pronto</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tab 2: Queue -->
+        <section class="tab-content" id="tab-queue">
+          <div class="queue-header-bar">
+            <h2 class="section-title"><span id="queue-count-text">Nenhum</span> item na fila</h2>
+            <div class="queue-controls">
+              <label class="toggle-switch-container">
+                <span class="toggle-label">Re-tentar Falhas</span>
+                <span class="switch-wrapper">
+                  <input type="checkbox" id="auto-retry-switch" />
+                  <span class="toggle-slider"></span>
+                </span>
+              </label>
+              <button class="btn btn-secondary hidden" id="btn-clear-completed">
+                Limpar Concluídos
+              </button>
+            </div>
+          </div>
+          
+          <div id="queue-empty-state" class="empty-state">
+            <p>Nenhum download ativo ou na fila.</p>
+          </div>
+          
+          <div class="queue-list" id="queue-list-container">
+            <!-- Queue items will be rendered dynamically here -->
+          </div>
+        </section>
+
+        <!-- Tab 3: Settings -->
+        <section class="tab-content" id="tab-settings">
+          <div class="settings-grid">
+            
+            <!-- Concurrency Card -->
+            <div class="card">
+              <h2 class="card-title">Downloads Simultâneos</h2>
+              <p class="settings-desc">Controla quantos vídeos serão baixados e convertidos ao mesmo tempo.</p>
+              
+              <div class="slider-container">
+                <span class="slider-val" id="max-concurrent-val">2</span>
+                <input 
+                  type="range" 
+                  id="max-concurrent-slider" 
+                  min="1" 
+                  max="5" 
+                  value="2" 
+                  step="1"
+                  aria-label="Downloads Simultâneos"
+                />
+              </div>
+            </div>
+
+            <!-- Destination Directory Card -->
+            <div class="card">
+              <h2 class="card-title">Destino dos Downloads</h2>
+              <p class="settings-desc">Selecione onde as músicas MP3 baixadas serão salvas.</p>
+              
+              <div class="folder-picker-group">
+                <input type="text" id="dest-folder-input" readonly aria-label="Pasta de Destino" />
+                <button class="btn btn-secondary" id="btn-select-folder">Escolher Pasta</button>
+              </div>
+              <p class="settings-hint">Playlists serão salvas em subpastas correspondentes automaticamente.</p>
+            </div>
+
+            <!-- Dependency Management Card -->
+            <div class="card">
+              <h2 class="card-title">Componentes do Sistema</h2>
+              <p class="settings-desc">
+                O YDownloader utiliza o <strong>yt-dlp</strong> e o <strong>FFmpeg</strong> para baixar e extrair áudio em alta fidelidade.
+              </p>
+              
+              <div class="dependency-status-list">
+                <div class="dep-status-item">
+                  <span>Gerenciador (yt-dlp):</span>
+                  <span id="status-ytdl" class="status-badge loading">Verificando...</span>
+                </div>
+                <div class="dep-status-item">
+                  <span>Conversor (FFmpeg):</span>
+                  <span id="status-ffmpeg" class="status-badge loading">Verificando...</span>
+                </div>
+              </div>
+
+              <!-- Install/Update Button -->
+              <button class="btn btn-primary" id="btn-install-deps" disabled>
+                Instalar Componentes
+              </button>
+
+              <div class="status-box hidden" id="dependency-status-box">
+                <span class="status-indicator animate-pulse"></span>
+                <span id="dependency-status-text">Pronto</span>
+              </div>
+            </div>
+
+          </div>
+        </section>
+
+      </main>
+
+    </div>
+  </body>
+</html>
