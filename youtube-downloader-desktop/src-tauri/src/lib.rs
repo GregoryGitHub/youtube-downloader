@@ -82,7 +82,7 @@ async fn set_max_concurrent(
     manager: State<'_, Arc<DownloadManager>>,
 ) -> Result<(), String> {
     let mut state = manager.state.lock().await;
-    state.max_concurrent = limit;
+    state.max_concurrent = limit.clamp(1, 10);
     manager.notify.notify_one(); // trigger check
     Ok(())
 }
@@ -184,6 +184,22 @@ async fn set_auto_retry(
     Ok(())
 }
 
+#[tauri::command]
+async fn get_organize_by_artist(manager: State<'_, Arc<DownloadManager>>) -> Result<bool, String> {
+    let state = manager.state.lock().await;
+    Ok(state.organize_by_artist)
+}
+
+#[tauri::command]
+async fn set_organize_by_artist(
+    enabled: bool,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    let mut state = manager.state.lock().await;
+    state.organize_by_artist = enabled;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -224,7 +240,9 @@ pub fn run() {
             clear_completed,
             retry_item,
             get_auto_retry,
-            set_auto_retry
+            set_auto_retry,
+            get_organize_by_artist,
+            set_organize_by_artist
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

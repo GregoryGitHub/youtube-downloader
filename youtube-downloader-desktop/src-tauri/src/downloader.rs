@@ -44,6 +44,7 @@ pub struct DownloadState {
     pub yt_dlp_path: String,
     pub ffmpeg_path: String,
     pub auto_retry: bool,
+    pub organize_by_artist: bool,
     // Store abort handles to cancel downloads
     pub active_downloads: HashMap<String, tauri::async_runtime::JoinHandle<()>>,
 }
@@ -58,11 +59,12 @@ impl DownloadManager {
         Self {
             state: Arc::new(Mutex::new(DownloadState {
                 queue: Vec::new(),
-                max_concurrent: 2,
+                max_concurrent: 10,
                 destination_folder: default_dest,
                 yt_dlp_path: yt_dlp,
                 ffmpeg_path: ffmpeg,
                 auto_retry: false,
+                organize_by_artist: true,
                 active_downloads: HashMap::new(),
             })),
             notify: Arc::new(Notify::new()),
@@ -140,9 +142,9 @@ impl DownloadManager {
     }
 
     async fn run_download(&self, app_handle: AppHandle, item: DownloadItem) -> Result<(), String> {
-        let (yt_dlp, ffmpeg_dir, dest_folder) = {
+        let (yt_dlp, ffmpeg_dir, dest_folder, organize_by_artist) = {
             let state = self.state.lock().await;
-            
+
             // Resolve ffmpeg parent dir for --ffmpeg-location
             let ffmpeg_dir = if !state.ffmpeg_path.is_empty() && state.ffmpeg_path != "ffmpeg" {
                 Path::new(&state.ffmpeg_path).parent().map(|p| p.to_string_lossy().to_string())
@@ -154,6 +156,7 @@ impl DownloadManager {
                 state.yt_dlp_path.clone(),
                 ffmpeg_dir,
                 state.destination_folder.clone(),
+                state.organize_by_artist,
             )
         };
 
@@ -171,18 +174,28 @@ impl DownloadManager {
             self.emit_queue_update(&state, &app_handle);
         }
 
-        // Determine destination template
+        // Determine destination template.
+        // When "organize by artist" is on, everything is nested under an artist
+        // folder. `primary_artist` is derived below via --parse-metadata so that
+        // multi-artist tracks ("A, B, C") still land in a single "A" folder;
+        // it falls back to the raw artist/uploader when parsing yields nothing.
+        let base_folder = if organize_by_artist {
+            dest_folder.join("%(primary_artist,album_artist,artist,uploader)s")
+        } else {
+            dest_folder.clone()
+        };
+
         let output_template = if let Some(ref playlist) = item.playlist_title {
             let sanitized_playlist = sanitize_filename(playlist);
             if item.is_album.unwrap_or(false) {
-                dest_folder
+                base_folder
                     .join(format!("{} (%(release_date,upload_date>%Y)s)", sanitized_playlist))
                     .join("%(title)s.%(ext)s")
             } else {
-                dest_folder.join(sanitized_playlist).join("%(title)s.%(ext)s")
+                base_folder.join(sanitized_playlist).join("%(title)s.%(ext)s")
             }
         } else {
-            dest_folder.join("%(title)s.%(ext)s")
+            base_folder.join("%(title)s.%(ext)s")
         };
 
         // Build yt-dlp arguments
@@ -204,6 +217,22 @@ impl DownloadManager {
         if let Some(track) = item.track_number {
             args.push("--parse-metadata".to_string());
             args.push(format!("{}:%(track_number)s", track));
+        }
+
+        if organize_by_artist {
+            // Keep only the text before the first comma so "A, B, C" -> "A".
+            // This drives the artist folder name.
+            args.push("--parse-metadata".to_string());
+            args.push(
+                "%(album_artist,artist,uploader)s:^\\s*(?P<primary_artist>[^,]+?)\\s*(,|$)"
+                    .to_string(),
+            );
+            // Apply the same rule to the tags embedded in the file so players
+            // like iTunes don't show the full "A, B, C" list as the artist.
+            args.push("--replace-in-metadata".to_string());
+            args.push("artist,album_artist".to_string());
+            args.push("\\s*,.*".to_string());
+            args.push(String::new());
         }
 
         args.extend(vec![

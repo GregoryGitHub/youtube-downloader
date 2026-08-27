@@ -25,6 +25,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const destFolderInput = document.getElementById("dest-folder-input");
   const btnSelectFolder = document.getElementById("btn-select-folder");
   const autoRetrySwitch = document.getElementById("auto-retry-switch");
+  const organizeArtistSwitch = document.getElementById("organize-artist-switch");
   
   const statusYtdl = document.getElementById("status-ytdl");
   const statusFfmpeg = document.getElementById("status-ffmpeg");
@@ -301,6 +302,16 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // Organize-by-artist switch toggle listener
+  organizeArtistSwitch.addEventListener("change", async () => {
+    const enabled = organizeArtistSwitch.checked;
+    try {
+      await invoke("set_organize_by_artist", { enabled });
+    } catch (e) {
+      console.error("Falha ao salvar organização por artista:", e);
+    }
+  });
+
   // ==========================================
   // 4. Settings Logic
   // ==========================================
@@ -336,7 +347,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const autoRetry = await invoke("get_auto_retry");
       autoRetrySwitch.checked = autoRetry;
-      
+
+      const organizeByArtist = await invoke("get_organize_by_artist");
+      organizeArtistSwitch.checked = organizeByArtist;
+
       await checkDependencies();
     } catch (e) {
       console.error(e);

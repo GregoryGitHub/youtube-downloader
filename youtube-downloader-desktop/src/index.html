@@ -102,13 +102,13 @@
               <p class="settings-desc">Controla quantos vídeos serão baixados e convertidos ao mesmo tempo.</p>
               
               <div class="slider-container">
-                <span class="slider-val" id="max-concurrent-val">2</span>
-                <input 
-                  type="range" 
-                  id="max-concurrent-slider" 
-                  min="1" 
-                  max="5" 
-                  value="2" 
+                <span class="slider-val" id="max-concurrent-val">10</span>
+                <input
+                  type="range"
+                  id="max-concurrent-slider"
+                  min="1"
+                  max="10"
+                  value="10"
                   step="1"
                   aria-label="Downloads Simultâneos"
                 />
@@ -124,7 +124,16 @@
                 <input type="text" id="dest-folder-input" readonly aria-label="Pasta de Destino" />
                 <button class="btn btn-secondary" id="btn-select-folder">Escolher Pasta</button>
               </div>
-              <p class="settings-hint">Playlists serão salvas em subpastas correspondentes automaticamente.</p>
+
+              <label class="toggle-switch-container settings-toggle-row">
+                <span class="toggle-label">Organizar em subpastas por artista</span>
+                <span class="switch-wrapper">
+                  <input type="checkbox" id="organize-artist-switch" checked />
+                  <span class="toggle-slider"></span>
+                </span>
+              </label>
+
+              <p class="settings-hint">Playlists serão salvas em subpastas correspondentes automaticamente. Com a opção acima ativa, o álbum "Deus cuida de Mim" fica em "Kleber Lucas/Deus cuida de Mim (ano)".</p>
             </div>
 
             <!-- Dependency Management Card -->
