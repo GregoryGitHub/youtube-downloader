@@ -855,3 +855,136 @@ input[type="range"]::-webkit-slider-thumb:hover {
   transform: translateX(20px);
 }
 
+/* Album metadata confirmation modal */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 100;
+}
+
+.modal-backdrop.hidden {
+  display: none;
+}
+
+.modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-lg);
+  padding: 20px;
+  width: min(560px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.album-head {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+
+.album-head img {
+  width: 96px;
+  height: 96px;
+  border-radius: var(--border-radius-sm);
+  object-fit: cover;
+  background: var(--bg-tertiary);
+  flex-shrink: 0;
+}
+
+.album-title {
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: var(--text-primary);
+}
+
+.album-artist {
+  color: var(--text-primary);
+}
+
+.album-info,
+.album-select-label {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.album-select {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm);
+  padding: 8px;
+  font-family: inherit;
+}
+
+.album-match {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.album-match.ok {
+  color: var(--status-success);
+}
+
+.album-match.partial {
+  color: var(--status-warning);
+}
+
+.album-match.error {
+  color: var(--status-danger);
+}
+
+.album-tracks {
+  list-style: none;
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-input);
+  border-radius: var(--border-radius-sm);
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 0.85rem;
+}
+
+.album-tracks li {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 2px 0;
+}
+
+.album-tracks li.unmatched {
+  color: var(--text-muted);
+}
+
+.album-lyrics {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--text-primary);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.modal-actions .btn {
+  width: auto;
+  flex: 0 0 auto;
+  padding-left: 18px;
+  padding-right: 18px;
+}
+
+/* The hidden attribute must win over component display rules (e.g. flex toggles). */
+[hidden] {
+  display: none !important;
+}

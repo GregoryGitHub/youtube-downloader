@@ -8,6 +8,7 @@ use tokio::process::Command;
 use tokio::sync::{Mutex, Notify};
 use tauri::{AppHandle, Emitter};
 
+use crate::catalog::{self, TrackMeta};
 use crate::settings::{AppMode, MediaType, PersistedSettings, DEFAULT_DEEZER_QUALITY};
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -42,6 +43,9 @@ pub struct DownloadItem {
     /// items. `None` means audio.
     #[serde(default)]
     pub media_type: Option<MediaType>,
+    /// Full iTunes/Deezer metadata the user accepted for this album track.
+    #[serde(default)]
+    pub track_meta: Option<TrackMeta>,
 }
 
 pub struct DownloadState {
@@ -54,6 +58,8 @@ pub struct DownloadState {
     pub ffmpeg_path: String,
     pub auto_retry: bool,
     pub organize_by_artist: bool,
+    /// Offer full catalogue metadata (with lyrics) when an album is queued.
+    pub full_album_meta: bool,
     // Deezer mode
     pub config_dir: PathBuf,
     pub mode: AppMode,
@@ -75,6 +81,7 @@ impl DownloadState {
             media_type: self.media_type,
             audio_folder: Some(self.destination_folder.clone()),
             video_folder: Some(self.video_folder.clone()),
+            full_album_meta: self.full_album_meta,
         }
         .save(&self.config_dir)
     }
@@ -137,6 +144,7 @@ impl DownloadManager {
                 ffmpeg_path: ffmpeg,
                 auto_retry: false,
                 organize_by_artist: true,
+                full_album_meta: deezer.settings.full_album_meta,
                 config_dir: deezer.config_dir,
                 mode: deezer.settings.mode,
                 deezer_arl: deezer.settings.deezer_arl,
@@ -227,7 +235,7 @@ impl DownloadManager {
 
         let is_video = item.media_type == Some(MediaType::Video);
 
-        let (yt_dlp, ffmpeg_dir, dest_folder, organize_by_artist) = {
+        let (yt_dlp, ffmpeg_dir, dest_folder, organize_by_artist, cover_cache) = {
             let state = self.state.lock().await;
 
             // Resolve ffmpeg parent dir for --ffmpeg-location
@@ -246,6 +254,7 @@ impl DownloadManager {
                     state.destination_folder.clone()
                 },
                 state.organize_by_artist,
+                state.config_dir.join("covers"),
             )
         };
 
@@ -328,13 +337,38 @@ impl DownloadManager {
 
         let status = child.wait().await.map_err(|e| format!("Erro ao aguardar processo: {}", e))?;
 
+        // Full album metadata: overwrite yt-dlp's tags with the catalogue data.
+        let mut tag_warning = None;
+        if status.success() && !is_video {
+            if let Some(meta) = item.track_meta.clone() {
+                let path = meta_mp3_path(&dest_folder, &meta, organize_by_artist);
+                {
+                    let mut state = self.state.lock().await;
+                    if let Some(i) = state.queue.iter_mut().find(|x| x.id == item.id) {
+                        i.status = DownloadStatus::Converting;
+                        i.status_detail = Some("Gravando metadados completos e letra...".to_string());
+                    }
+                    self.emit_queue_update(&state, &app_handle);
+                }
+                let result = tauri::async_runtime::spawn_blocking(move || apply_track_meta(&path, &meta, &cover_cache))
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()));
+                if let Err(e) = result {
+                    tag_warning = Some(e);
+                }
+            }
+        }
+
         let mut state = self.state.lock().await;
         if let Some(i) = state.queue.iter_mut().find(|x| x.id == item.id) {
             if status.success() {
                 i.status = DownloadStatus::Completed;
                 i.progress = 1.0;
                 i.eta = "00:00".to_string();
-                i.status_detail = Some("Concluído".to_string());
+                i.status_detail = Some(match &tag_warning {
+                    Some(e) => format!("Concluído (metadados não gravados: {})", e),
+                    None => "Concluído".to_string(),
+                });
             } else {
                 return Err("Processo yt-dlp retornou um código de erro.".to_string());
             }
@@ -657,6 +691,44 @@ fn output_template(item: &DownloadItem, base_folder: &Path) -> String {
     template.to_string_lossy().to_string()
 }
 
+/// Folder that receives an album track with catalogue metadata:
+/// "<dest>/<Artist>/<Album (year)>" (no artist level when organising is off).
+fn meta_folder(dest_folder: &Path, meta: &TrackMeta, organize_by_artist: bool) -> PathBuf {
+    let mut dir = dest_folder.to_path_buf();
+    if organize_by_artist {
+        let artist = primary_artist(&meta.album_artist);
+        if !artist.is_empty() {
+            dir.push(artist);
+        }
+    }
+    dir.push(sanitize_filename(&meta.album_folder()));
+    dir
+}
+
+fn meta_file_stem(meta: &TrackMeta) -> String {
+    let stem = sanitize_filename(&meta.file_stem());
+    stem.chars().take(150).collect::<String>().trim_end().trim_end_matches('.').to_string()
+}
+
+/// Where yt-dlp leaves the MP3 of a track with catalogue metadata.
+fn meta_mp3_path(dest_folder: &Path, meta: &TrackMeta, organize_by_artist: bool) -> PathBuf {
+    meta_folder(dest_folder, meta, organize_by_artist).join(format!("{}.mp3", meta_file_stem(meta)))
+}
+
+/// Cover (cached per album), lyrics and catalogue tags for one finished MP3.
+fn apply_track_meta(path: &Path, meta: &TrackMeta, cover_cache: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("arquivo não encontrado em {}", path.display()));
+    }
+    let cover = meta.cover_url.as_deref().and_then(|u| catalog::cover_bytes(u, cover_cache));
+    let lyrics = if meta.lyrics {
+        catalog::lyrics(&meta.artist, &meta.title, &meta.album, meta.duration_sec)
+    } else {
+        None
+    };
+    catalog::write_tags(path, meta, cover, lyrics)
+}
+
 /// yt-dlp arguments for an MP3 320k download with music metadata.
 fn audio_args(item: &DownloadItem, dest_folder: &Path, organize_by_artist: bool) -> Vec<String> {
     // When "organize by artist" is on, everything is nested under an artist
@@ -705,6 +777,15 @@ fn audio_args(item: &DownloadItem, dest_folder: &Path, organize_by_artist: bool)
         args.push(String::new());
     }
 
+    // With catalogue metadata the path is fixed up front: "<Artist>/<Album (year)>/NN - Title.mp3".
+    let template = match &item.track_meta {
+        Some(meta) => meta_folder(dest_folder, meta, organize_by_artist)
+            .join(format!("{}.%(ext)s", meta_file_stem(meta).replace('%', "%%")))
+            .to_string_lossy()
+            .to_string(),
+        None => output_template(item, &base_folder),
+    };
+
     args.extend(vec![
         "--ppa".to_string(),
         "EmbedThumbnail+ffmpeg_o:-c:v mjpeg -vf crop=ih:ih".to_string(),
@@ -712,7 +793,7 @@ fn audio_args(item: &DownloadItem, dest_folder: &Path, organize_by_artist: bool)
         "--no-warnings".to_string(),
         "--ignore-errors".to_string(),
         "-o".to_string(),
-        output_template(item, &base_folder),
+        template,
     ]);
     args
 }
@@ -1205,5 +1286,62 @@ mod tests {
         assert_eq!(percent2, 0.999);
         assert_eq!(speed2, "Unknown speed");
         assert_eq!(eta2, "Unknown");
+    }
+
+    /// End to end against YouTube + iTunes + LRCLIB with the locally installed
+    /// yt-dlp/ffmpeg: `cargo test -- --ignored live_album`.
+    #[test]
+    #[ignore]
+    fn live_album_download_with_meta() {
+        let appdata = std::env::var("APPDATA").unwrap();
+        let tools = Path::new(&appdata).join("com.youtubedownloader.desktop");
+        let yt_dlp = tools.join("yt-dlp.exe");
+        let entries = vec![
+            catalog::PlaylistEntry { id: "GLQKfz8tisc".into(), title: "Daniel Na Cova dos Leões".into(), duration: 241 },
+            catalog::PlaylistEntry { id: "39DAyG3nhuM".into(), title: "Quase Sem Querer".into(), duration: 281 },
+            catalog::PlaylistEntry { id: "lMeK3oNMUMk".into(), title: "Acrilic On Canvas".into(), duration: 281 },
+            catalog::PlaylistEntry { id: "OsLs-Cwgco0".into(), title: "Eduardo e Mônica".into(), duration: 272 },
+        ];
+        let candidates = catalog::search("Legião Urbana", "Dois (Remasterizado)", 12).unwrap();
+        let found = catalog::load_match(&candidates[0], &entries).unwrap();
+        let d = &found.details;
+        println!("album: {} / {} {:?} {:?} {} faixas", d.album.title, d.album.artist, d.year, d.genre, d.tracks.len());
+        let t = &d.tracks[found.matches["OsLs-Cwgco0"]];
+        println!("match Eduardo e Mônica -> {:02} {}", t.track, t.title);
+        let meta = TrackMeta {
+            title: t.title.clone(), artist: t.artist.clone(), album: d.album.title.clone(),
+            album_artist: d.album.artist.clone(), year: d.year.clone(), genre: d.genre.clone(),
+            track: t.track, track_total: d.tracks.len() as u32, disc: t.disc, disc_total: d.disc_total,
+            duration_sec: t.duration_sec, cover_url: d.album.cover_url.clone(), lyrics: true,
+        };
+        let item = DownloadItem {
+            id: "OsLs-Cwgco0".into(), url: "https://music.youtube.com/watch?v=OsLs-Cwgco0".into(),
+            title: meta.title.clone(), playlist_title: Some("Album - Dois (Remasterizado)".into()),
+            track_number: Some(4), progress: 0.0, eta: String::new(), status: DownloadStatus::Queued,
+            status_detail: None, error_message: None, retry_count: 0, is_album: Some(true),
+            media_type: None, track_meta: Some(meta.clone()),
+        };
+        let dest = std::env::temp_dir().join("ydl_live_album");
+        fs::remove_dir_all(&dest).ok();
+        let mut args = audio_args(&item, &dest, true);
+        args.push("--ffmpeg-location".into());
+        args.push(tools.to_string_lossy().to_string());
+        args.push(item.url.clone());
+        let out = std::process::Command::new(&yt_dlp).args(&args).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let path = meta_mp3_path(&dest, &meta, true);
+        println!("arquivo: {}", path.display());
+        apply_track_meta(&path, &meta, &std::env::temp_dir().join("ydl_covers")).unwrap();
+
+        let file = lofty::read_from_path(&path).unwrap();
+        let tag = file.tag(lofty::tag::TagType::Id3v2).unwrap();
+        use lofty::prelude::*;
+        println!("tags: {:?} | {:?} | {:?} | {:?}/{:?} | {:?} | capa {} bytes | letra {} chars",
+            tag.title(), tag.artist(), tag.album(), tag.track(), tag.track_total(), tag.genre(),
+            tag.pictures().first().map(|p| p.data().len()).unwrap_or(0),
+            tag.get_string(&lofty::tag::ItemKey::Lyrics).map(|l| l.len()).unwrap_or(0));
+        assert_eq!(tag.title().as_deref(), Some(meta.title.as_str()));
+        assert!(tag.pictures().first().map(|p| p.data().len()).unwrap_or(0) > 50_000);
+        assert!(tag.get_string(&lofty::tag::ItemKey::Lyrics).is_some());
     }
 }

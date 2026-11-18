@@ -40,7 +40,22 @@ data class DownloadItem(
     /** Document URI of the folder holding the finished MP3. */
     val folderUri: String? = null,
     /** Epoch millis before which an auto-retry must not start (backoff). */
-    val nextAttemptAt: Long = 0L
+    val nextAttemptAt: Long = 0L,
+    /** Full catalogue metadata the user accepted for this album track. */
+    val trackMeta: TrackMeta? = null
+)
+
+/** Album found in iTunes/Deezer for a queued YouTube Music album, waiting for the user's OK. */
+data class AlbumProposal(
+    val info: PlaylistInfo,
+    val candidates: List<CatalogAlbum>,
+    val selected: Int,
+    val details: CatalogAlbumDetails?,
+    /** playlist entry id -> index in details.tracks */
+    val matches: Map<String, Int>,
+    val loading: Boolean = false,
+    val error: String? = null,
+    val includeLyrics: Boolean = true,
 )
 
 /**
@@ -64,6 +79,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val folderMode: StateFlow<String> = DownloadQueueManager.folderMode
     val customFolderUri: StateFlow<String> = DownloadQueueManager.customFolderUri
     val autoRetry: StateFlow<Boolean> = DownloadQueueManager.autoRetry
+    val organizeByArtist: StateFlow<Boolean> = DownloadQueueManager.organizeByArtist
+    val fullAlbumMeta: StateFlow<Boolean> = DownloadQueueManager.fullAlbumMeta
+
+    private val _albumProposal = MutableStateFlow<AlbumProposal?>(null)
+    val albumProposal = _albumProposal.asStateFlow()
+    private var onAlbumQueued: () -> Unit = {}
 
     private val _isUpdatingYtdl = MutableStateFlow(false)
     val isUpdatingYtdl = _isUpdatingYtdl.asStateFlow()
@@ -95,6 +116,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setCustomFolderUri(uriString: String) = DownloadQueueManager.setCustomFolderUri(uriString)
 
     fun setAutoRetry(enabled: Boolean) = DownloadQueueManager.setAutoRetry(enabled)
+
+    fun setOrganizeByArtist(enabled: Boolean) = DownloadQueueManager.setOrganizeByArtist(enabled)
+
+    fun setFullAlbumMeta(enabled: Boolean) = DownloadQueueManager.setFullAlbumMeta(enabled)
 
     fun updateYtdl(context: Context) {
         if (_isUpdatingYtdl.value) return
@@ -136,22 +161,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val downloadManager = DownloadManager(context)
                 val info = downloadManager.fetchPlaylistOrVideoInfo(inputUrl)
 
-                val newItems = info.entries.mapIndexed { index, entry ->
-                    DownloadItem(
-                        id = entry.id,
-                        url = entry.url,
-                        title = entry.title,
-                        playlistTitle = if (info.isPlaylist) info.title else null,
-                        trackNumber = if (info.isPlaylist) index + 1 else null,
-                        isAlbum = info.isAlbum,
-                        albumYear = info.year,
-                        status = DownloadStatus.QUEUED
-                    )
+                if (info.isAlbum && info.entries.isNotEmpty() && fullAlbumMeta.value) {
+                    _status.value = "Buscando o álbum no iTunes/Deezer..."
+                    val proposal = runCatching { findAlbum(downloadManager, info) }
+                        .onFailure { Log.w("MainViewModel", "album lookup", it) }
+                        .getOrNull()
+                    if (proposal != null) {
+                        onAlbumQueued = onQueued
+                        _albumProposal.value = proposal
+                        _status.value = "Confirme os dados do álbum."
+                        return@launch
+                    }
+                    enqueue(info, null)
+                    _status.value = "Álbum não encontrado no iTunes/Deezer; ${info.entries.size} faixa(s) na fila com os dados do YouTube."
+                    onQueued()
+                    return@launch
                 }
 
-                DownloadQueueManager.addItems(newItems)
-                _status.value = "Adicionado à fila: ${newItems.size} item(ns)"
-                _url.value = ""
+                enqueue(info, null)
+                _status.value = "Adicionado à fila: ${info.entries.size} item(ns)"
                 onQueued()
             } catch (e: Exception) {
                 _status.value = "Erro ao analisar: ${e.message}"
@@ -159,5 +187,105 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _isDownloading.value = false
             }
         }
+    }
+
+    private fun enqueue(info: PlaylistInfo, proposal: AlbumProposal?) {
+        val d = proposal?.details
+        val newItems = info.entries.mapIndexed { index, entry ->
+            val meta = d?.let { trackMetaFor(it, entry, index, info.entries.size, proposal.matches[entry.id], proposal.includeLyrics) }
+            DownloadItem(
+                id = entry.id,
+                url = entry.url,
+                title = meta?.title ?: entry.title,
+                playlistTitle = if (info.isPlaylist) info.title else null,
+                trackNumber = if (info.isPlaylist) index + 1 else null,
+                isAlbum = info.isAlbum,
+                albumYear = info.year,
+                status = DownloadStatus.QUEUED,
+                trackMeta = meta
+            )
+        }
+        DownloadQueueManager.addItems(newItems)
+        _url.value = ""
+    }
+
+    private fun trackMetaFor(
+        d: CatalogAlbumDetails,
+        entry: PlaylistEntry,
+        index: Int,
+        entryCount: Int,
+        match: Int?,
+        lyrics: Boolean
+    ): TrackMeta {
+        val t = match?.let { d.tracks.getOrNull(it) }
+        return TrackMeta(
+            // Tracks the catalogue doesn't list keep the YouTube title but still
+            // land in the same album folder.
+            title = t?.title ?: entry.title,
+            artist = t?.artist?.takeIf { it.isNotBlank() } ?: d.album.artist,
+            album = d.album.title,
+            albumArtist = d.album.artist,
+            year = d.year,
+            genre = d.genre,
+            track = t?.track ?: (index + 1),
+            trackTotal = t?.let { d.trackTotal(it.disc) } ?: maxOf(entryCount, d.tracks.size),
+            disc = t?.disc ?: 1,
+            discTotal = d.discTotal,
+            durationSec = t?.durationSec?.takeIf { it > 0 } ?: entry.durationSec,
+            coverUrl = d.album.coverUrl,
+            lyrics = lyrics
+        )
+    }
+
+    private suspend fun findAlbum(dm: DownloadManager, info: PlaylistInfo): AlbumProposal? {
+        val (artist, probedAlbum) = dm.probeAlbum(info.entries.first().url)
+        // YouTube Music names the playlist "Album - <name>".
+        val album = probedAlbum.ifBlank { info.title.orEmpty().removePrefix("Album - ").trim() }
+        if (album.isBlank()) return null
+        val candidates = withContext(Dispatchers.IO) { AlbumCatalog.search(artist, album, info.entries.size) }
+        if (candidates.isEmpty()) return null
+        return withDetails(AlbumProposal(info, candidates, 0, null, emptyMap()), 0)
+    }
+
+    private suspend fun withDetails(p: AlbumProposal, index: Int): AlbumProposal {
+        val d = withContext(Dispatchers.IO) { AlbumCatalog.details(p.candidates[index]) }
+        val entries = p.info.entries.mapIndexed { i, e -> TitleMatch.Entry(e.id, e.title, e.durationSec, i) }
+        return p.copy(selected = index, details = d, matches = TitleMatch.match(entries, d.tracks), loading = false, error = null)
+    }
+
+    fun selectAlbumCandidate(index: Int) {
+        val p = _albumProposal.value ?: return
+        if (index == p.selected && p.details != null) return
+        _albumProposal.value = p.copy(selected = index, loading = true, error = null)
+        viewModelScope.launch {
+            _albumProposal.value = try {
+                withDetails(p, index)
+            } catch (e: Exception) {
+                p.copy(selected = index, details = null, loading = false, error = "Erro ao carregar o álbum: ${e.message}")
+            }
+        }
+    }
+
+    fun setIncludeLyrics(enabled: Boolean) {
+        _albumProposal.value = _albumProposal.value?.copy(includeLyrics = enabled)
+    }
+
+    /** Queue the album with the catalogue data ([useMeta]) or with YouTube's own tags. */
+    fun confirmAlbum(useMeta: Boolean) {
+        val p = _albumProposal.value ?: return
+        _albumProposal.value = null
+        val withMeta = useMeta && p.details != null
+        enqueue(p.info, if (withMeta) p else null)
+        _status.value = if (withMeta) {
+            "Adicionado à fila: ${p.info.entries.size} faixa(s) com metadados completos"
+        } else {
+            "Adicionado à fila: ${p.info.entries.size} item(ns)"
+        }
+        onAlbumQueued()
+    }
+
+    fun cancelAlbum() {
+        _albumProposal.value = null
+        _status.value = "Cancelado."
     }
 }

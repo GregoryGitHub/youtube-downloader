@@ -1,3 +1,4 @@
+mod catalog;
 mod dependency;
 mod downloader;
 mod settings;
@@ -7,6 +8,102 @@ use tauri::{AppHandle, Manager, State};
 use dependency::{DeezerDependencies, Dependencies};
 use downloader::{DeezerRuntime, DownloadItem, DownloadManager, DownloadStatus};
 use settings::{AppMode, MediaType, PersistedSettings, DEEZER_QUALITIES};
+
+/// Album proposal shown to the user before an album download.
+#[derive(serde::Serialize)]
+struct AlbumProposal {
+    candidates: Vec<catalog::CatalogAlbum>,
+    selected: usize,
+    #[serde(flatten)]
+    found: catalog::AlbumMatch,
+}
+
+/// Reads artist / album of the first track of a YouTube Music album.
+async fn probe_album(yt_dlp: &str, url: &str) -> Result<(String, String), String> {
+    let mut cmd = tokio::process::Command::new(yt_dlp);
+    cmd.args([
+        "--skip-download",
+        "--no-warnings",
+        "--no-playlist",
+        "--print",
+        "%(artist,creator)s|||%(album)s",
+        url,
+    ])
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().await.map_err(|e| format!("Falha ao executar yt-dlp: {}", e))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or_default();
+    let mut parts = line.split("|||").map(|p| {
+        let p = p.trim();
+        if p == "NA" { String::new() } else { p.to_string() }
+    });
+    let artist = parts.next().unwrap_or_default();
+    let artist = artist.split(',').next().unwrap_or_default().trim().to_string();
+    Ok((artist, parts.next().unwrap_or_default()))
+}
+
+/// Finds the album of a queued YouTube Music playlist in iTunes/Deezer and
+/// matches its tracks. `None` when no catalogue has it.
+#[tauri::command]
+async fn find_album(
+    first_url: String,
+    playlist_title: String,
+    entries: Vec<catalog::PlaylistEntry>,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<Option<AlbumProposal>, String> {
+    let yt_dlp = manager.state.lock().await.yt_dlp_path.clone();
+    let (artist, probed) = probe_album(&yt_dlp, &first_url).await.unwrap_or_default();
+    // YouTube Music names the playlist "Album - <name>".
+    let album = if probed.is_empty() {
+        playlist_title.trim_start_matches("Album - ").trim().to_string()
+    } else {
+        probed
+    };
+    if album.is_empty() {
+        return Ok(None);
+    }
+    let count = entries.len() as u32;
+    tauri::async_runtime::spawn_blocking(move || {
+        let candidates = catalog::search(&artist, &album, count)?;
+        let Some(first) = candidates.first() else { return Ok(None) };
+        let found = catalog::load_match(first, &entries)?;
+        Ok(Some(AlbumProposal { candidates, selected: 0, found }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Tracks and matches for another candidate picked in the dialog.
+#[tauri::command]
+async fn load_album(
+    album: catalog::CatalogAlbum,
+    entries: Vec<catalog::PlaylistEntry>,
+) -> Result<catalog::AlbumMatch, String> {
+    tauri::async_runtime::spawn_blocking(move || catalog::load_match(&album, &entries))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn get_full_album_meta(manager: State<'_, Arc<DownloadManager>>) -> Result<bool, String> {
+    Ok(manager.state.lock().await.full_album_meta)
+}
+
+#[tauri::command]
+async fn set_full_album_meta(
+    enabled: bool,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    let mut state = manager.state.lock().await;
+    state.full_album_meta = enabled;
+    state.persist()
+}
 
 #[derive(serde::Serialize)]
 struct DeezerSettings {
@@ -397,7 +494,11 @@ pub fn run() {
             set_deezer_arl,
             set_deezer_quality,
             get_deezer_dependencies_status,
-            install_deezer_dependencies
+            install_deezer_dependencies,
+            find_album,
+            load_album,
+            get_full_album_meta,
+            set_full_album_meta
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -188,6 +188,16 @@
                 </span>
               </label>
 
+              <label class="toggle-switch-container settings-toggle-row youtube-only">
+                <span class="toggle-label">Metadados completos em álbuns (iTunes/Deezer + letras)</span>
+                <span class="switch-wrapper">
+                  <input type="checkbox" id="full-meta-switch" checked />
+                  <span class="toggle-slider"></span>
+                </span>
+              </label>
+
+              <p class="settings-hint youtube-only">Ao baixar um álbum do YouTube Music, busca título, artista, ano, gênero, nº das faixas, capa em alta e letras, e pede sua confirmação antes de aplicar.</p>
+
               <p class="settings-hint">Playlists serão salvas em subpastas correspondentes automaticamente. Com a opção acima ativa, o álbum "Deus cuida de Mim" fica em "Kleber Lucas/Deus cuida de Mim (ano)".</p>
             </div>
 
@@ -247,6 +257,32 @@
 
       </main>
 
+    </div>
+
+    <!-- Album metadata confirmation -->
+    <div class="modal-backdrop hidden" id="album-modal">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="album-modal-title">
+        <h2 class="card-title" id="album-modal-title">Metadados do álbum</h2>
+        <p class="settings-desc">Encontramos este álbum. Aplicar título, artista, ano, gênero, número das faixas, capa em alta e letras?</p>
+        <div class="album-head">
+          <img id="album-cover" alt="" />
+          <div class="album-head-text">
+            <div class="album-title" id="album-title"></div>
+            <div class="album-artist" id="album-artist"></div>
+            <div class="album-info" id="album-info"></div>
+          </div>
+        </div>
+        <label class="album-select-label" for="album-candidates">Não é este? Escolha outro resultado:</label>
+        <select id="album-candidates" class="album-select"></select>
+        <div class="album-match" id="album-match"></div>
+        <ol class="album-tracks" id="album-tracks"></ol>
+        <label class="album-lyrics"><input type="checkbox" id="album-lyrics" checked /> Baixar letras (LRCLIB)</label>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="album-cancel">Cancelar</button>
+          <button class="btn btn-secondary" id="album-skip">Baixar sem</button>
+          <button class="btn btn-primary" id="album-apply">Aplicar</button>
+        </div>
+      </div>
     </div>
   </body>
 </html>

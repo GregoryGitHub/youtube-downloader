@@ -1,6 +1,6 @@
 [package]
 name = "youtube-downloader-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -26,6 +26,7 @@ tokio = { version = "1", features = ["full"] }
 ureq = { version = "2.9", features = ["tls"] }
 zip = "0.6"
 rfd = "0.14"
+lofty = "0.22"
 
 
 

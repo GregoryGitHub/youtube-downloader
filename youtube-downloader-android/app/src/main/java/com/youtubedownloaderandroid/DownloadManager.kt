@@ -34,7 +34,8 @@ data class PlaylistInfo(
 data class PlaylistEntry(
     val id: String,
     val title: String,
-    val url: String
+    val url: String,
+    val durationSec: Int = 0
 )
 
 private fun JSONObject.optStringOrEmpty(key: String): String =
@@ -123,7 +124,7 @@ class DownloadManager(private val context: Context) {
                     val entryTitle = entry.optString("title", "Faixa ${i + 1}")
                     val entryUrl = entry.optString("url", "https://www.youtube.com/watch?v=$id")
                     if (id.isNotEmpty()) {
-                        entries.add(PlaylistEntry(id, entryTitle, entryUrl))
+                        entries.add(PlaylistEntry(id, entryTitle, entryUrl, entry.optDouble("duration", 0.0).toInt()))
                     }
                 }
             }
@@ -155,6 +156,8 @@ class DownloadManager(private val context: Context) {
         trackNumber: Int? = null,
         isAlbum: Boolean = false,
         albumYear: String? = null,
+        organizeByArtist: Boolean = true,
+        trackMeta: TrackMeta? = null,
         isLastAttempt: Boolean = true,
         onProgress: (Float, String, String) -> Unit
     ): Result<String> = withContext(Dispatchers.IO) {
@@ -163,10 +166,16 @@ class DownloadManager(private val context: Context) {
             if (!workDir.exists()) workDir.mkdirs()
             val marker = File(workDir, DONE_MARKER)
 
-            // Real release year / genre (iTunes, Deezer), resolved once per album.
-            val meta = resolveMeta(itemId, url, workDir, if (isAlbum) subfolderName else null, isLastAttempt, onProgress)
+            // Year / genre: from the album the user confirmed, otherwise looked
+            // up once per album (iTunes, Deezer).
+            val meta = if (trackMeta != null) {
+                AlbumMeta(trackMeta.year, trackMeta.genre, "catalog")
+            } else {
+                resolveMeta(itemId, url, workDir, if (isAlbum) subfolderName else null, isLastAttempt, onProgress)
+            }
             val folderYear = meta.year ?: albumYear
-            val folderName = subfolderName?.let { if (isAlbum && isYear(folderYear)) "$it ($folderYear)" else it }
+            val folderName = trackMeta?.albumFolder
+                ?: subfolderName?.let { if (isAlbum && isYear(folderYear)) "$it ($folderYear)" else it }
 
             if (marker.exists() && findMp3(workDir) != null) {
                 Log.i(TAG, "[$itemId] MP3 já pronto de tentativa anterior, apenas copiando.")
@@ -177,12 +186,26 @@ class DownloadManager(private val context: Context) {
                 marker.createNewFile()
             }
 
-            val mp3 = findMp3(workDir) ?: throw Exception("Nenhum arquivo MP3 foi gerado.")
+            var mp3 = findMp3(workDir) ?: throw Exception("Nenhum arquivo MP3 foi gerado.")
+
+            if (trackMeta != null) {
+                TrackTagger.apply(context, mp3, trackMeta) { onProgress(100f, "N/A", it) }
+                val named = File(workDir, sanitizeFilename(trackMeta.fileStem).take(150) + ".mp3")
+                if (named != mp3 && mp3.renameTo(named)) mp3 = named
+            }
+
+            // "<Artist>/<Album (year)>/" like the desktop app.
+            val artist = if (organizeByArtist) {
+                trackMeta?.albumArtist?.substringBefore(",")?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: TrackTagger.mainArtist(mp3)
+            } else null
+            val folders = listOfNotNull(artist, folderName).map { sanitizeFilename(it) }.filter { it.isNotEmpty() }
+
             onProgress(100f, "N/A", "[move] Copiando para a pasta de destino...")
             val folderUri = if (folderMode == "custom" && !customFolderUri.isNullOrEmpty()) {
-                moveToCustomFolder(mp3, customFolderUri, folderName)
+                moveToCustomFolder(mp3, customFolderUri, folders)
             } else {
-                moveToPublicMusicFolder(mp3, folderName)
+                moveToPublicMusicFolder(mp3, folders)
             }
 
             workDir.deleteRecursively()
@@ -231,7 +254,7 @@ class DownloadManager(private val context: Context) {
         isLastAttempt: Boolean,
         onProgress: (Float, String, String) -> Unit
     ): AlbumMeta {
-        onProgress(0f, "N/A", "[meta] Buscando ano e genero...")
+        onProgress(0f, "N/A", "[meta] Buscando ano e gênero (iTunes/Deezer)...")
         val probe = withContext(Dispatchers.IO) { probeTrack(itemId, url) }
         // Year from YouTube's own release date when the catalogues have nothing.
         val ytYear = probe.releaseDate.take(4).takeIf { isYear(it) }
@@ -246,6 +269,12 @@ class DownloadManager(private val context: Context) {
             AlbumMeta.NONE
         }
         return if (found.year != null) found else AlbumMeta(ytYear, found.genre, "youtube")
+    }
+
+    /** Artist and album of an album playlist, read from its first track. */
+    suspend fun probeAlbum(firstTrackUrl: String): Pair<String, String> = withContext(Dispatchers.IO) {
+        val p = probeTrack("album-probe", firstTrackUrl)
+        p.artist to p.album
     }
 
     private data class TrackProbe(val artist: String, val album: String, val releaseDate: String)
@@ -379,24 +408,21 @@ class DownloadManager(private val context: Context) {
     }
 
     private fun sanitizeFilename(name: String): String {
-        return name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
+        // FAT/exFAT SD cards also reject names ending in a dot.
+        return name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().trimEnd('.').trim()
     }
 
     /** @return document URI of the folder that received the file. */
-    private fun moveToCustomFolder(file: File, treeUriString: String, subfolderName: String?): String {
+    private fun moveToCustomFolder(file: File, treeUriString: String, folders: List<String>): String {
         val treeUri = Uri.parse(treeUriString)
         val rootDir = DocumentFile.fromTreeUri(context, treeUri) ?: throw Exception("Não foi possível acessar a pasta selecionada.")
 
         val pickedDir = synchronized(folderLock) {
-            if (subfolderName != null) {
-                val sanitized = sanitizeFilename(subfolderName)
-                val existingDir = rootDir.findFile(sanitized)
-                if (existingDir != null && existingDir.isDirectory) {
-                    existingDir
-                } else {
-                    rootDir.createDirectory(sanitized) ?: rootDir
-                }
-            } else rootDir
+            folders.fold(rootDir) { dir, name ->
+                val existingDir = dir.findFile(name)
+                if (existingDir != null && existingDir.isDirectory) existingDir
+                else dir.createDirectory(name) ?: throw Exception("Não foi possível criar a pasta \"$name\".")
+            }
         }
 
         pickedDir.findFile(file.name)?.delete()
@@ -416,10 +442,9 @@ class DownloadManager(private val context: Context) {
     }
 
     /** @return document URI (external storage provider) of the folder that received the file. */
-    private fun moveToPublicMusicFolder(file: File, subfolderName: String?): String {
+    private fun moveToPublicMusicFolder(file: File, folders: List<String>): String {
         val resolver = context.contentResolver
-        val sanitizedSubfolder = subfolderName?.let { sanitizeFilename(it) }
-        val relativePath = if (sanitizedSubfolder != null) "Music/$sanitizedSubfolder/" else "Music/"
+        val relativePath = (listOf("Music") + folders).joinToString("/", postfix = "/")
 
         val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)

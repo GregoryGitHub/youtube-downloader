@@ -38,6 +38,10 @@ fn default_quality() -> String {
     DEFAULT_DEEZER_QUALITY.to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// Settings that survive an app restart. Everything else in `DownloadState`
 /// is intentionally session-only, matching the app's existing behaviour.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -54,6 +58,9 @@ pub struct PersistedSettings {
     pub audio_folder: Option<PathBuf>,
     #[serde(default)]
     pub video_folder: Option<PathBuf>,
+    /// Ask to apply full iTunes/Deezer metadata when an album is queued.
+    #[serde(default = "default_true")]
+    pub full_album_meta: bool,
 }
 
 impl Default for PersistedSettings {
@@ -65,6 +72,7 @@ impl Default for PersistedSettings {
             media_type: MediaType::default(),
             audio_folder: None,
             video_folder: None,
+            full_album_meta: true,
         }
     }
 }
@@ -105,5 +113,6 @@ mod tests {
         assert_eq!(s.media_type, MediaType::Audio);
         assert!(s.audio_folder.is_none());
         assert!(s.video_folder.is_none());
+        assert!(s.full_album_meta);
     }
 }

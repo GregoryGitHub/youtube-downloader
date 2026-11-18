@@ -26,6 +26,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnSelectFolder = document.getElementById("btn-select-folder");
   const autoRetrySwitch = document.getElementById("auto-retry-switch");
   const organizeArtistSwitch = document.getElementById("organize-artist-switch");
+  const fullMetaSwitch = document.getElementById("full-meta-switch");
   
   const statusYtdl = document.getElementById("status-ytdl");
   const statusFfmpeg = document.getElementById("status-ffmpeg");
@@ -285,9 +286,48 @@ document.addEventListener("DOMContentLoaded", () => {
         });
       }
 
+      if (newItems.length > 0 && isAlbum && itemMediaType === "audio" && fullMetaSwitch.checked) {
+        showDownloaderStatus("Buscando o álbum no iTunes/Deezer...", "loading");
+        const entries = info.entries
+          .filter((e) => e && e.id)
+          .map((e) => ({ id: e.id, title: e.title || "", duration: Math.round(e.duration || 0) }));
+        let proposal = null;
+        try {
+          proposal = await invoke("find_album", {
+            firstUrl: newItems[0].url,
+            playlistTitle: playlistTitle || "",
+            entries,
+          });
+        } catch (e) {
+          console.error("Busca do álbum falhou:", e);
+        }
+        if (proposal) {
+          const choice = await askAlbumMetadata(proposal, entries);
+          if (choice === "cancel") {
+            showDownloaderStatus("Cancelado.", "info");
+            return;
+          }
+          if (choice) {
+            newItems.forEach((item, index) => {
+              const entryId = item.id;
+              item.track_meta = trackMetaFor(choice, entryId, item.title, index, newItems.length);
+              item.title = item.track_meta.title;
+            });
+          }
+        } else {
+          showDownloaderStatus("Álbum não encontrado no iTunes/Deezer; usando os dados do YouTube.", "info");
+        }
+      }
+
       if (newItems.length > 0) {
         await invoke("add_to_queue", { items: newItems });
-        showDownloaderStatus(`Adicionado à fila: ${newItems.length} item(ns).`, "success");
+        const withMeta = newItems.some((i) => i.track_meta);
+        showDownloaderStatus(
+          withMeta
+            ? `Adicionado à fila: ${newItems.length} faixa(s) com metadados completos.`
+            : `Adicionado à fila: ${newItems.length} item(ns).`,
+          "success"
+        );
         urlInput.value = "";
       } else {
         showDownloaderStatus("Erro: Nenhum vídeo extraído do link.", "error");
@@ -473,6 +513,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  fullMetaSwitch.addEventListener("change", async () => {
+    try {
+      await invoke("set_full_album_meta", { enabled: fullMetaSwitch.checked });
+    } catch (e) {
+      console.error("Falha ao salvar metadados completos:", e);
+    }
+  });
+
   // Organize-by-artist switch toggle listener
   organizeArtistSwitch.addEventListener("change", async () => {
     const enabled = organizeArtistSwitch.checked;
@@ -598,6 +646,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const organizeByArtist = await invoke("get_organize_by_artist");
       organizeArtistSwitch.checked = organizeByArtist;
+      fullMetaSwitch.checked = await invoke("get_full_album_meta");
 
       const deezerSettings = await invoke("get_deezer_settings");
       deezerArlInput.value = deezerSettings.arl || "";
@@ -674,6 +723,146 @@ document.addEventListener("DOMContentLoaded", () => {
       dependencyStatusText.textContent = `${data.status}`;
     }
   });
+
+  // ==========================================
+  // 5. Album metadata confirmation
+  // ==========================================
+  const albumModal = document.getElementById("album-modal");
+  const albumCover = document.getElementById("album-cover");
+  const albumTitle = document.getElementById("album-title");
+  const albumArtist = document.getElementById("album-artist");
+  const albumInfo = document.getElementById("album-info");
+  const albumCandidates = document.getElementById("album-candidates");
+  const albumMatch = document.getElementById("album-match");
+  const albumTracks = document.getElementById("album-tracks");
+  const albumLyrics = document.getElementById("album-lyrics");
+  const albumApply = document.getElementById("album-apply");
+  const albumSkip = document.getElementById("album-skip");
+  const albumCancel = document.getElementById("album-cancel");
+
+  const pad2 = (n) => String(n).padStart(2, "0");
+
+  /**
+   * Shows the album found and resolves with
+   *   { details, matches, lyrics } to apply it, null to download without it,
+   *   or "cancel" to queue nothing.
+   */
+  function askAlbumMetadata(proposal, entries) {
+    return new Promise((resolve) => {
+      let current = { details: proposal.details, matches: proposal.matches };
+      let loading = false;
+
+      albumCandidates.innerHTML = "";
+      proposal.candidates.forEach((c, i) => {
+        const opt = document.createElement("option");
+        opt.value = String(i);
+        opt.textContent = [c.title, c.artist, c.year, `${c.track_count} faixas`, c.source]
+          .filter(Boolean)
+          .join(" · ");
+        albumCandidates.appendChild(opt);
+      });
+      albumCandidates.value = String(proposal.selected || 0);
+      albumCandidates.parentElement.querySelector(".album-select-label").hidden = proposal.candidates.length < 2;
+      albumCandidates.hidden = proposal.candidates.length < 2;
+      albumLyrics.checked = true;
+
+      function render() {
+        const d = current.details;
+        const album = d ? d.album : proposal.candidates[Number(albumCandidates.value)];
+        const cover = album.cover_url || album.thumb_url || "";
+        albumCover.hidden = !cover;
+        if (cover) albumCover.src = cover;
+        albumTitle.textContent = album.title;
+        albumArtist.textContent = album.artist;
+        albumInfo.textContent = [d && d.year, d && d.genre, album.source].filter(Boolean).join(" · ");
+        albumApply.disabled = loading || !d;
+        albumTracks.innerHTML = "";
+        albumMatch.className = "album-match";
+        if (loading) {
+          albumMatch.textContent = "Carregando faixas...";
+          return;
+        }
+        if (!d) {
+          albumMatch.textContent = "Não foi possível carregar este álbum.";
+          albumMatch.classList.add("error");
+          return;
+        }
+        const matched = entries.filter((e) => current.matches[e.id] !== undefined).length;
+        albumMatch.textContent =
+          `${matched} de ${entries.length} faixas do YouTube ligadas às ${d.tracks.length} faixas do álbum` +
+          (matched < entries.length ? " (as outras mantêm o título do YouTube)" : "");
+        albumMatch.classList.add(matched === entries.length ? "ok" : "partial");
+        entries.forEach((e) => {
+          const li = document.createElement("li");
+          const t = d.tracks[current.matches[e.id]];
+          if (t) {
+            li.textContent = `${pad2(t.track)}  ${t.title}`;
+          } else {
+            li.textContent = `--  ${e.title}`;
+            li.classList.add("unmatched");
+          }
+          albumTracks.appendChild(li);
+        });
+      }
+
+      albumCandidates.onchange = async () => {
+        loading = true;
+        render();
+        try {
+          current = await invoke("load_album", {
+            album: proposal.candidates[Number(albumCandidates.value)],
+            entries,
+          });
+        } catch (e) {
+          console.error(e);
+          current = { details: null, matches: {} };
+        }
+        loading = false;
+        render();
+      };
+
+      function close(result) {
+        albumModal.classList.add("hidden");
+        albumApply.onclick = albumSkip.onclick = albumCancel.onclick = null;
+        document.removeEventListener("keydown", onKey);
+        resolve(result);
+      }
+      function onKey(ev) {
+        if (ev.key === "Escape") close("cancel");
+      }
+
+      albumApply.onclick = () => close({ ...current, lyrics: albumLyrics.checked });
+      albumSkip.onclick = () => close(null);
+      albumCancel.onclick = () => close("cancel");
+      document.addEventListener("keydown", onKey);
+
+      render();
+      albumModal.classList.remove("hidden");
+      albumApply.focus();
+    });
+  }
+
+  /** Catalogue metadata for one playlist entry (unmatched tracks keep the YouTube title). */
+  function trackMetaFor(choice, entryId, youtubeTitle, index, entryCount) {
+    const d = choice.details;
+    const t = d.tracks[choice.matches[entryId]];
+    const trackTotal = (disc) => d.tracks.filter((x) => x.disc === disc).length;
+    return {
+      title: t ? t.title : youtubeTitle,
+      artist: (t && t.artist) || d.album.artist,
+      album: d.album.title,
+      album_artist: d.album.artist,
+      year: d.year || null,
+      genre: d.genre || null,
+      track: t ? t.track : index + 1,
+      track_total: t ? trackTotal(t.disc) : Math.max(entryCount, d.tracks.length),
+      disc: t ? t.disc : 1,
+      disc_total: d.disc_total,
+      duration_sec: t ? t.duration_sec : 0,
+      cover_url: d.album.cover_url || null,
+      lyrics: choice.lyrics,
+    };
+  }
 
   // Startup Init
   initSettings();

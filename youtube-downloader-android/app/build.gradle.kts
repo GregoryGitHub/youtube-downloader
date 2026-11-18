@@ -13,7 +13,8 @@ android {
 
     defaultConfig {
         applicationId = "com.youtubedownloaderandroid"
-        minSdk = 24
+        // jaudiotagger (tag writing) needs java.nio.file, available from Android 8.0.
+        minSdk = 26
         targetSdk = 36
         // CI passes -PversionCode / -PversionName from the release tag.
         versionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 1
@@ -87,6 +88,7 @@ dependencies {
     implementation(libs.youtubedl.aria2c)
 
     implementation(libs.coil.compose)
+    implementation(libs.jaudiotagger)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

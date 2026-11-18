@@ -51,6 +51,14 @@ object DownloadQueueManager {
     private val _autoRetry = MutableStateFlow(true)
     val autoRetry = _autoRetry.asStateFlow()
 
+    /** "<Artist>/<Album (year)>/" folders, like the desktop app. */
+    private val _organizeByArtist = MutableStateFlow(true)
+    val organizeByArtist = _organizeByArtist.asStateFlow()
+
+    /** Offer full iTunes/Deezer metadata (with lyrics) when an album is queued. */
+    private val _fullAlbumMeta = MutableStateFlow(true)
+    val fullAlbumMeta = _fullAlbumMeta.asStateFlow()
+
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     /** Running download jobs by item id. Guarded by [lock]. */
@@ -73,6 +81,8 @@ object DownloadQueueManager {
         _folderMode.value = prefs.getString("folder_mode", "public") ?: "public"
         _customFolderUri.value = prefs.getString("custom_folder_uri", "") ?: ""
         _autoRetry.value = prefs.getBoolean("auto_retry_v2", true)
+        _organizeByArtist.value = prefs.getBoolean("organize_by_artist", true)
+        _fullAlbumMeta.value = prefs.getBoolean("full_album_meta", true)
 
         restoreQueue()
 
@@ -115,6 +125,16 @@ object DownloadQueueManager {
     fun setAutoRetry(enabled: Boolean) {
         _autoRetry.value = enabled
         prefs.edit().putBoolean("auto_retry_v2", enabled).apply()
+    }
+
+    fun setOrganizeByArtist(enabled: Boolean) {
+        _organizeByArtist.value = enabled
+        prefs.edit().putBoolean("organize_by_artist", enabled).apply()
+    }
+
+    fun setFullAlbumMeta(enabled: Boolean) {
+        _fullAlbumMeta.value = enabled
+        prefs.edit().putBoolean("full_album_meta", enabled).apply()
     }
 
     fun addItems(items: List<DownloadItem>) {
@@ -250,6 +270,8 @@ object DownloadQueueManager {
                     trackNumber = item.trackNumber,
                     isAlbum = item.isAlbum,
                     albumYear = item.albumYear,
+                    organizeByArtist = _organizeByArtist.value,
+                    trackMeta = item.trackMeta,
                     isLastAttempt = isLastAttempt
                 ) { progress, eta, line ->
                     updateItemProgress(item.id, progress / 100f, eta, line)
@@ -359,6 +381,7 @@ object DownloadQueueManager {
                     item.folderUri?.let { put("folderUri", it) }
                     item.albumYear?.let { put("albumYear", it) }
                     item.errorMessage?.let { put("errorMessage", it) }
+                    item.trackMeta?.let { put("trackMeta", it.toJson()) }
                 })
             }
             val tmp = File(queueFile.parentFile, "queue.json.tmp")
@@ -395,7 +418,8 @@ object DownloadQueueManager {
                     retryCount = o.optInt("retryCount", 0),
                     isAlbum = o.optBoolean("isAlbum", false),
                     folderUri = if (o.has("folderUri")) o.getString("folderUri") else null,
-                    albumYear = if (o.has("albumYear")) o.getString("albumYear") else null
+                    albumYear = if (o.has("albumYear")) o.getString("albumYear") else null,
+                    trackMeta = o.optJSONObject("trackMeta")?.let { runCatching { TrackMeta.fromJson(it) }.getOrNull() }
                 )
             }
             _queue.value = items
@@ -428,10 +452,10 @@ object DownloadQueueManager {
             return "Aplicando capa..."
         }
         if (trimmed.startsWith("[Metadata]")) {
-            return "Gravando metadados..."
+            return trimmed.removePrefix("[Metadata]").trim().takeIf { it.endsWith("...") } ?: "Gravando metadados..."
         }
         if (trimmed.startsWith("[meta]")) {
-            return "Buscando ano e gênero (iTunes/Deezer)..."
+            return trimmed.removePrefix("[meta]").trim().ifEmpty { "Buscando metadados..." }
         }
         if (trimmed.startsWith("[move]")) {
             return "Copiando para a pasta de destino..."

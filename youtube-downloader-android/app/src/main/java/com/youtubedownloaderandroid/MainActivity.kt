@@ -123,6 +123,9 @@ fun YoutubeDownloaderApp(
     val isUpdatingYtdl by viewModel.isUpdatingYtdl.collectAsState()
     val ytdlUpdateStatus by viewModel.ytdlUpdateStatus.collectAsState()
     val autoRetry by viewModel.autoRetry.collectAsState()
+    val organizeByArtist by viewModel.organizeByArtist.collectAsState()
+    val fullAlbumMeta by viewModel.fullAlbumMeta.collectAsState()
+    val albumProposal by viewModel.albumProposal.collectAsState()
     val context = LocalContext.current
 
     // Request notification permission on Android 13+
@@ -260,6 +263,10 @@ fun YoutubeDownloaderApp(
                         onRetryAllFailed = viewModel::retryAllFailed
                     )
                     2 -> SettingsTab(
+                        organizeByArtist = organizeByArtist,
+                        fullAlbumMeta = fullAlbumMeta,
+                        onOrganizeByArtistChange = viewModel::setOrganizeByArtist,
+                        onFullAlbumMetaChange = viewModel::setFullAlbumMeta,
                         maxConcurrent = maxConcurrent,
                         folderMode = folderMode,
                         customFolderUri = customFolderUri,
@@ -273,6 +280,17 @@ fun YoutubeDownloaderApp(
                 }
             }
         }
+    }
+
+    albumProposal?.let { proposal ->
+        AlbumConfirmDialog(
+            proposal = proposal,
+            onSelect = viewModel::selectAlbumCandidate,
+            onLyricsChange = viewModel::setIncludeLyrics,
+            onConfirm = { viewModel.confirmAlbum(useMeta = true) },
+            onWithoutMeta = { viewModel.confirmAlbum(useMeta = false) },
+            onCancel = viewModel::cancelAlbum
+        )
     }
 }
 
@@ -661,7 +679,31 @@ fun QueueItemCard(
 }
 
 @Composable
+private fun SettingSwitch(title: String, description: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(text = title, color = Color.White, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+            Text(text = description, color = Color(0xFF8E8E8E), style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = Color(0xFFFF0000),
+                uncheckedThumbColor = Color(0xFF8E8E8E),
+                uncheckedTrackColor = Color(0xFF2F2F2F)
+            )
+        )
+    }
+}
+
+@Composable
 fun SettingsTab(
+    organizeByArtist: Boolean,
+    fullAlbumMeta: Boolean,
+    onOrganizeByArtistChange: (Boolean) -> Unit,
+    onFullAlbumMetaChange: (Boolean) -> Unit,
     maxConcurrent: Int,
     folderMode: String,
     customFolderUri: String,
@@ -726,6 +768,39 @@ fun SettingsTab(
         }
 
         BackgroundCard()
+
+        // Library organisation + metadata card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, Color(0xFF2F2F2F), RoundedCornerShape(16.dp)),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1F1F1F)),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = "Biblioteca e Metadados",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                )
+                SettingSwitch(
+                    title = "Organizar por artista",
+                    description = "Salva em Artista/Álbum (ano)/, juntando todos os álbuns do mesmo artista na mesma pasta.",
+                    checked = organizeByArtist,
+                    onChange = onOrganizeByArtistChange
+                )
+                SettingSwitch(
+                    title = "Metadados completos em álbuns",
+                    description = "Ao baixar um álbum, busca no iTunes/Deezer título, artista, ano, gênero, nº das faixas, capa em alta e letras, e pede sua confirmação antes.",
+                    checked = fullAlbumMeta,
+                    onChange = onFullAlbumMetaChange
+                )
+            }
+        }
 
         // Folder Mode selection card
         Card(
@@ -816,7 +891,7 @@ fun SettingsTab(
                 }
 
                 Text(
-                    text = "Downloads de playlist serão agrupados em uma subpasta com o nome da playlist.",
+                    text = "Downloads de playlist são agrupados em uma subpasta com o nome da playlist (ou do álbum).",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color(0xFF8E8E8E)
                 )
