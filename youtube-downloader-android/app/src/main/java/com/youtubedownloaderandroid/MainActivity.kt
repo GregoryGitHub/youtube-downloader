@@ -40,6 +40,9 @@ import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -245,7 +248,7 @@ fun YoutubeDownloaderApp(
                         status = status,
                         isDownloading = isDownloading,
                         onUrlChange = viewModel::onUrlChange,
-                        onQueueClick = { viewModel.queueUrl(context) }
+                        onQueueClick = { viewModel.queueUrl(context) { selectedTab = 1 } }
                     )
                     1 -> QueueTab(
                         queue = queue,
@@ -253,7 +256,8 @@ fun YoutubeDownloaderApp(
                         onAutoRetryChange = viewModel::setAutoRetry,
                         onRemove = viewModel::removeItem,
                         onClearCompleted = viewModel::clearCompleted,
-                        onRetry = viewModel::retryItem
+                        onRetry = viewModel::retryItem,
+                        onRetryAllFailed = viewModel::retryAllFailed
                     )
                     2 -> SettingsTab(
                         maxConcurrent = maxConcurrent,
@@ -393,8 +397,10 @@ fun QueueTab(
     onAutoRetryChange: (Boolean) -> Unit,
     onRemove: (String) -> Unit,
     onClearCompleted: () -> Unit,
-    onRetry: (String) -> Unit
+    onRetry: (String) -> Unit,
+    onRetryAllFailed: () -> Unit = {}
 ) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -408,7 +414,7 @@ fun QueueTab(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Re-tentar automaticamente falhas",
+                text = "Re-tentar falhas automaticamente (até ${DownloadQueueManager.MAX_AUTO_RETRIES}x)",
                 color = Color.White,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium
@@ -443,9 +449,16 @@ fun QueueTab(
                 color = Color.White,
                 fontWeight = FontWeight.Bold
             )
-            if (queue.any { it.status == DownloadStatus.COMPLETED || it.status == DownloadStatus.FAILED }) {
-                TextButton(onClick = onClearCompleted) {
-                    Text("Limpar Concluídos", color = Color(0xFFFF0000), fontWeight = FontWeight.Bold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (queue.any { it.status == DownloadStatus.FAILED }) {
+                    TextButton(onClick = onRetryAllFailed) {
+                        Text("Repetir Falhas", color = Color(0xFFFF0000), fontWeight = FontWeight.Bold)
+                    }
+                }
+                if (queue.any { it.status == DownloadStatus.COMPLETED || it.status == DownloadStatus.FAILED }) {
+                    TextButton(onClick = onClearCompleted) {
+                        Text("Limpar Concluídos", color = Color(0xFFFF0000), fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
@@ -471,6 +484,7 @@ fun QueueTab(
                 items(queue, key = { it.id }) { item ->
                     QueueItemCard(
                         item = item,
+                        onOpenFolder = { openDownloadFolder(context, item) },
                         onCancel = { onRemove(item.id) },
                         onRetry = { onRetry(item.id) }
                     )
@@ -483,6 +497,7 @@ fun QueueTab(
 @Composable
 fun QueueItemCard(
     item: DownloadItem,
+    onOpenFolder: () -> Unit = {},
     onCancel: () -> Unit,
     onRetry: () -> Unit
 ) {
@@ -501,13 +516,15 @@ fun QueueItemCard(
         DownloadStatus.DOWNLOADING -> "Baixando (${(item.progress * 100).toInt()}%)"
         DownloadStatus.CONVERTING -> "Convertendo..."
         DownloadStatus.FETCHING_INFO -> "Inicializando..."
-        DownloadStatus.QUEUED -> "Na fila"
+        DownloadStatus.QUEUED -> if (item.retryCount > 0) "Retentando" else "Na fila"
     }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, Color(0xFF2F2F2F), RoundedCornerShape(10.dp)),
+            .border(1.dp, Color(0xFF2F2F2F), RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onOpenFolder),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF1F1F1F)),
         shape = RoundedCornerShape(10.dp)
     ) {
@@ -534,7 +551,7 @@ fun QueueItemCard(
                         Text(
                             text = "Playlist: ${item.playlistTitle}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFFFF4E4E), // YouTube Red Accent
+                            color = Color(0xFF8BE39B), // Light green
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -658,7 +675,8 @@ fun SettingsTab(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(top = 8.dp),
+            .verticalScroll(rememberScrollState())
+            .padding(top = 8.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text(
@@ -700,12 +718,14 @@ fun SettingsTab(
                 )
                 
                 Text(
-                    text = "Controla quantos vídeos serão processados ao mesmo tempo.",
+                    text = "Controla quantos vídeos serão processados ao mesmo tempo. Acima de 3 o YouTube tende a limitar a conexão; as falhas são re-tentadas automaticamente.",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color(0xFF8E8E8E)
                 )
             }
         }
+
+        BackgroundCard()
 
         // Folder Mode selection card
         Card(
@@ -881,4 +901,101 @@ private fun getReadableUriPath(uriString: String): String {
     } catch (e: Exception) {
         "Pasta personalizada"
     }
+}
+
+/**
+ * Lets the user exempt the app from battery optimisation so downloads keep
+ * running with the screen locked on aggressive OEM ROMs.
+ */
+@android.annotation.SuppressLint("BatteryLife")
+@Composable
+fun BackgroundCard() {
+    val context = LocalContext.current
+    val powerManager = remember { context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager }
+    var exempt by remember { mutableStateOf(powerManager.isIgnoringBatteryOptimizations(context.packageName)) }
+
+    // Re-check when returning from the system dialog.
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                exempt = powerManager.isIgnoringBatteryOptimizations(context.packageName)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, Color(0xFF2F2F2F), RoundedCornerShape(16.dp)),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF1F1F1F)),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "Downloads em segundo plano",
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color.White,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = if (exempt) {
+                    "Liberado: os downloads continuam com a tela bloqueada."
+                } else {
+                    "Para continuar baixando com a tela bloqueada, permita que o app ignore a otimização de bateria."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (exempt) Color(0xFF2BA040) else Color(0xFF8E8E8E)
+            )
+            if (!exempt) {
+                Button(
+                    onClick = {
+                        try {
+                            context.startActivity(
+                                Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                                    .setData(Uri.parse("package:${context.packageName}"))
+                            )
+                        } catch (e: Exception) {
+                            context.startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF0000))
+                ) {
+                    Text("Permitir em segundo plano", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Opens the folder of a finished download in the device's file manager.
+ * Tries the folder view first (Files / My Files), then falls back to the
+ * system document browser positioned on that folder.
+ */
+fun openDownloadFolder(context: android.content.Context, item: DownloadItem) {
+    val folder = item.folderUri
+    if (item.status != DownloadStatus.COMPLETED || folder == null) {
+        android.widget.Toast.makeText(context, "A música ainda não foi salva.", android.widget.Toast.LENGTH_SHORT).show()
+        return
+    }
+    val uri = Uri.parse(folder)
+    val attempts = listOf(
+        Intent(Intent.ACTION_VIEW).setDataAndType(uri, android.provider.DocumentsContract.Document.MIME_TYPE_DIR),
+        Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, uri)
+    )
+    for (intent in attempts) {
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            context.startActivity(intent)
+            return
+        } catch (_: Exception) {
+        }
+    }
+    android.widget.Toast.makeText(context, "Nenhum gerenciador de arquivos encontrado.", android.widget.Toast.LENGTH_SHORT).show()
 }
