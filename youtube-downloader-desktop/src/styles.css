@@ -35,6 +35,15 @@
   --glow-shadow: 0 0 15px rgba(255, 0, 0, 0.15);
 }
 
+/* Deezer mode: swap the red accent for Deezer's purple */
+body.mode-deezer {
+  --accent-color: #a238ff;
+  --accent-hover: #8b1fe0;
+  --accent-alpha: rgba(162, 56, 255, 0.15);
+  --border-focus: #a238ff;
+  --glow-shadow: 0 0 15px rgba(162, 56, 255, 0.25);
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -64,8 +73,43 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
   padding: 24px 0;
   border-bottom: 1px solid var(--border-color);
+}
+
+/* Mode Switch (YouTube / Deezer) */
+.mode-switch {
+  display: flex;
+  gap: 4px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm);
+  padding: 4px;
+}
+
+.mode-option {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-family: var(--font-family);
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 18px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.mode-option:hover {
+  color: var(--text-primary);
+}
+
+.mode-option.active {
+  background-color: var(--accent-color);
+  color: #ffffff;
+  box-shadow: var(--glow-shadow);
 }
 
 .brand {
@@ -514,6 +558,84 @@ input[type="text"]:focus {
   font-size: 12px;
   color: var(--text-muted);
   margin-top: 8px;
+}
+
+.settings-hint code,
+.settings-desc code {
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+}
+
+/* Deezer audio-quality selector */
+.deezer-quality-label {
+  display: block;
+  margin-top: 22px;
+  margin-bottom: 10px;
+}
+
+.quality-options {
+  display: flex;
+  gap: 8px;
+}
+
+.quality-option {
+  flex: 1;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-family: var(--font-family);
+  font-size: 13px;
+  font-weight: 700;
+  padding: 10px;
+  border-radius: var(--border-radius-sm);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.quality-option:hover {
+  color: var(--text-primary);
+  border-color: var(--bg-tertiary);
+}
+
+.quality-option.active {
+  background-color: var(--accent-alpha);
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+}
+
+/* YouTube audio/video selector */
+.media-type-group {
+  margin-bottom: 16px;
+}
+
+.video-folder-block {
+  margin-top: 20px;
+}
+
+.queue-item-media {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  border-radius: 4px;
+  vertical-align: middle;
+  background-color: var(--accent-alpha);
+  color: var(--accent-color);
+}
+
+.deezload-deps {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color);
+}
+
+.deezload-deps .settings-desc {
+  margin-bottom: 16px;
 }
 
 /* Slider Controls */

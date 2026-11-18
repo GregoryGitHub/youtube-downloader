@@ -1,10 +1,18 @@
 mod dependency;
 mod downloader;
+mod settings;
 
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
-use dependency::Dependencies;
-use downloader::{DownloadItem, DownloadManager, DownloadStatus};
+use dependency::{DeezerDependencies, Dependencies};
+use downloader::{DeezerRuntime, DownloadItem, DownloadManager, DownloadStatus};
+use settings::{AppMode, MediaType, PersistedSettings, DEEZER_QUALITIES};
+
+#[derive(serde::Serialize)]
+struct DeezerSettings {
+    arl: String,
+    quality: String,
+}
 
 #[tauri::command]
 fn get_dependencies_status(handle: AppHandle) -> Result<Dependencies, String> {
@@ -94,12 +102,30 @@ async fn get_destination_folder(manager: State<'_, Arc<DownloadManager>>) -> Res
 }
 
 #[tauri::command]
+async fn get_video_folder(manager: State<'_, Arc<DownloadManager>>) -> Result<String, String> {
+    let state = manager.state.lock().await;
+    Ok(state.video_folder.to_string_lossy().to_string())
+}
+
+/// Pick the destination for `target` ("audio" or "video") and persist it.
+#[tauri::command]
 async fn select_folder(
+    target: String,
     manager: State<'_, Arc<DownloadManager>>,
 ) -> Result<Option<String>, String> {
+    let is_video = match target.as_str() {
+        "audio" => false,
+        "video" => true,
+        other => return Err(format!("Destino inválido: {}", other)),
+    };
+
     let default_path = {
         let state = manager.state.lock().await;
-        state.destination_folder.clone()
+        if is_video {
+            state.video_folder.clone()
+        } else {
+            state.destination_folder.clone()
+        }
     };
 
     let folder = rfd::FileDialog::new()
@@ -109,7 +135,12 @@ async fn select_folder(
     if let Some(path) = folder {
         let path_str = path.to_string_lossy().to_string();
         let mut state = manager.state.lock().await;
-        state.destination_folder = path;
+        if is_video {
+            state.video_folder = path;
+        } else {
+            state.destination_folder = path;
+        }
+        state.persist()?;
         Ok(Some(path_str))
     } else {
         Ok(None)
@@ -200,6 +231,99 @@ async fn set_organize_by_artist(
     Ok(())
 }
 
+#[tauri::command]
+async fn get_app_mode(manager: State<'_, Arc<DownloadManager>>) -> Result<AppMode, String> {
+    let state = manager.state.lock().await;
+    Ok(state.mode)
+}
+
+#[tauri::command]
+async fn set_app_mode(
+    mode: String,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    let mode = match mode.as_str() {
+        "deezer" => AppMode::Deezer,
+        "youtube" => AppMode::Youtube,
+        other => return Err(format!("Modo inválido: {}", other)),
+    };
+    let mut state = manager.state.lock().await;
+    state.mode = mode;
+    state.persist()
+}
+
+#[tauri::command]
+async fn get_media_type(manager: State<'_, Arc<DownloadManager>>) -> Result<MediaType, String> {
+    let state = manager.state.lock().await;
+    Ok(state.media_type)
+}
+
+#[tauri::command]
+async fn set_media_type(
+    media_type: String,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    let media_type = match media_type.as_str() {
+        "audio" => MediaType::Audio,
+        "video" => MediaType::Video,
+        other => return Err(format!("Tipo de mídia inválido: {}", other)),
+    };
+    let mut state = manager.state.lock().await;
+    state.media_type = media_type;
+    state.persist()
+}
+
+#[tauri::command]
+async fn get_deezer_settings(
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<DeezerSettings, String> {
+    let state = manager.state.lock().await;
+    Ok(DeezerSettings {
+        arl: state.deezer_arl.clone(),
+        quality: state.deezer_quality.clone(),
+    })
+}
+
+#[tauri::command]
+async fn set_deezer_arl(
+    arl: String,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    let mut state = manager.state.lock().await;
+    state.deezer_arl = arl.trim().to_string();
+    state.persist()
+}
+
+#[tauri::command]
+async fn set_deezer_quality(
+    quality: String,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    if !DEEZER_QUALITIES.contains(&quality.as_str()) {
+        return Err(format!("Qualidade inválida: {}", quality));
+    }
+    let mut state = manager.state.lock().await;
+    state.deezer_quality = quality;
+    state.persist()
+}
+
+#[tauri::command]
+fn get_deezer_dependencies_status(handle: AppHandle) -> Result<DeezerDependencies, String> {
+    dependency::check_deezer_dependencies(&handle)
+}
+
+#[tauri::command]
+async fn install_deezer_dependencies(
+    handle: AppHandle,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<DeezerDependencies, String> {
+    let deps = dependency::download_deezer_dependencies(&handle)?;
+    let mut state = manager.state.lock().await;
+    state.python_path = deps.python_path.clone();
+    state.deezload_path = deps.deezload_path.clone();
+    Ok(deps)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -210,16 +334,37 @@ pub fn run() {
             let default_dest = path_resolver
                 .audio_dir()
                 .unwrap_or_else(|_| path_resolver.download_dir().unwrap_or_else(|_| std::env::current_dir().unwrap()));
+            let default_video_dest = path_resolver
+                .video_dir()
+                .unwrap_or_else(|_| path_resolver.download_dir().unwrap_or_else(|_| std::env::current_dir().unwrap()));
 
             let initial_deps = dependency::check_dependencies(app.handle()).unwrap_or(Dependencies {
                 yt_dlp_path: "".to_string(),
                 ffmpeg_path: "".to_string(),
             });
 
+            let config_dir = path_resolver
+                .app_data_dir()
+                .unwrap_or_else(|_| std::env::current_dir().unwrap());
+            let persisted = PersistedSettings::load(&config_dir);
+
+            let deezer_deps = dependency::check_deezer_dependencies(app.handle())
+                .unwrap_or(DeezerDependencies {
+                    python_path: "".to_string(),
+                    deezload_path: "".to_string(),
+                });
+
             let manager = Arc::new(DownloadManager::new(
                 initial_deps.yt_dlp_path,
                 initial_deps.ffmpeg_path,
                 default_dest,
+                default_video_dest,
+                DeezerRuntime {
+                    config_dir,
+                    settings: persisted,
+                    python_path: deezer_deps.python_path,
+                    deezload_path: deezer_deps.deezload_path,
+                },
             ));
 
             // Start queue background task
@@ -235,6 +380,7 @@ pub fn run() {
             add_to_queue,
             set_max_concurrent,
             get_destination_folder,
+            get_video_folder,
             select_folder,
             remove_item,
             clear_completed,
@@ -242,7 +388,16 @@ pub fn run() {
             get_auto_retry,
             set_auto_retry,
             get_organize_by_artist,
-            set_organize_by_artist
+            set_organize_by_artist,
+            get_app_mode,
+            set_app_mode,
+            get_media_type,
+            set_media_type,
+            get_deezer_settings,
+            set_deezer_arl,
+            set_deezer_quality,
+            get_deezer_dependencies_status,
+            install_deezer_dependencies
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -11,6 +11,21 @@ pub struct Dependencies {
 }
 
 #[derive(Clone, serde::Serialize)]
+pub struct DeezerDependencies {
+    /// Command used to launch Python (e.g. "python3", "python", "py"). Empty if none found.
+    pub python_path: String,
+    /// Absolute path to the downloaded deezload.py. Empty if not installed yet.
+    pub deezload_path: String,
+}
+
+/// Packages deezload needs at runtime. `textual` (from its requirements.txt) is
+/// only used by the TUI, so it is intentionally omitted here.
+const DEEZLOAD_PYTHON_DEPS: [&str; 4] = ["requests", "pycryptodome", "mutagen", "deezer-py"];
+
+const DEEZLOAD_SCRIPT_URL: &str =
+    "https://raw.githubusercontent.com/Lunatic16/deezload/HEAD/deezload.py";
+
+#[derive(Clone, serde::Serialize)]
 struct DownloadProgress {
     component: String,
     progress: f32, // 0.0 to 1.0
@@ -77,6 +92,305 @@ pub fn check_dependencies(app: &AppHandle) -> Result<Dependencies, String> {
         yt_dlp_path,
         ffmpeg_path,
     })
+}
+
+/// Run `<cmd> --version` and confirm it is a real Python 3. This filters out
+/// Windows' "App execution alias" stub (`WindowsApps\python.exe`), which is on
+/// PATH but only opens the Microsoft Store and fails any actual invocation.
+fn probe_python(cmd: &str) -> bool {
+    let mut c = std::process::Command::new(cmd);
+    c.arg("--version");
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    match c.output() {
+        Ok(out) => {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            out.status.success() && text.contains("Python 3")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Locate a usable Python interpreter.
+///
+/// On Windows we deliberately ignore whatever is on PATH (the Microsoft Store
+/// `python.exe` alias is a frequent trap) and only accept the private
+/// interpreter this app installs under the deezload folder. On other platforms
+/// the system `python3` is used.
+fn find_python(app: &AppHandle) -> String {
+    let _ = app;
+
+    #[cfg(windows)]
+    {
+        if let Ok(dir) = deezload_dir(app) {
+            let exe = dir.join("python").join("python.exe");
+            if exe.is_file() {
+                let path = exe.to_string_lossy().to_string();
+                if probe_python(&path) {
+                    return path;
+                }
+            }
+        }
+        String::new()
+    }
+
+    #[cfg(not(windows))]
+    {
+        for candidate in ["python3", "python"] {
+            if probe_python(candidate) {
+                return candidate.to_string();
+            }
+        }
+        String::new()
+    }
+}
+
+fn deezload_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("deezload"))
+}
+
+pub fn check_deezer_dependencies(app: &AppHandle) -> Result<DeezerDependencies, String> {
+    let script = deezload_dir(app)?.join("deezload.py");
+    let deezload_path = if script.is_file() {
+        script.to_string_lossy().to_string()
+    } else {
+        String::new()
+    };
+
+    Ok(DeezerDependencies {
+        python_path: find_python(app),
+        deezload_path,
+    })
+}
+
+pub fn download_deezer_dependencies(app: &AppHandle) -> Result<DeezerDependencies, String> {
+    let dir = deezload_dir(app)?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    // 1. Fetch the single-file deezload script.
+    app.emit(
+        "dep-progress",
+        DownloadProgress {
+            component: "deezload".to_string(),
+            progress: 0.05,
+            status: "Baixando deezload.py...".to_string(),
+        },
+    )
+    .ok();
+
+    let script_dest = dir.join("deezload.py");
+    download_file(app, "deezload", DEEZLOAD_SCRIPT_URL, &script_dest)?;
+
+    // 2. Make sure a Python 3 is available. On Windows the app ships its own
+    //    (embeddable build), so the user never has to install anything.
+    #[cfg(windows)]
+    let (python, into_site_packages) = {
+        let existing = find_python(app);
+        let py = if existing.is_empty() {
+            install_embedded_python(app, &dir)?
+        } else {
+            existing
+        };
+        (py, true)
+    };
+
+    #[cfg(not(windows))]
+    let (python, into_site_packages) = {
+        let existing = find_python(app);
+        if existing.is_empty() {
+            return Err(
+                "Python 3 não encontrado. Instale o Python 3 pelo gerenciador de pacotes do sistema (ex.: sudo apt install python3 python3-pip)."
+                    .to_string(),
+            );
+        }
+        (existing, false)
+    };
+
+    // 3. Install deezload's Python dependencies. For our private interpreter we
+    //    drop them straight into its site-packages; for a system interpreter we
+    //    use an isolated --target folder (added to PYTHONPATH at run time) so we
+    //    never touch the user's global packages.
+    app.emit(
+        "dep-progress",
+        DownloadProgress {
+            component: "deezload".to_string(),
+            progress: 0.8,
+            status: "Instalando bibliotecas Python (pode demorar)...".to_string(),
+        },
+    )
+    .ok();
+
+    let libs_dir = dir.join("libs");
+    let mut cmd = std::process::Command::new(&python);
+    cmd.args(["-m", "pip", "install", "--upgrade", "--no-warn-script-location"]);
+    if !into_site_packages {
+        cmd.arg("--target").arg(&libs_dir);
+    }
+    cmd.args(DEEZLOAD_PYTHON_DEPS);
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Falha ao executar pip: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "pip falhou ao instalar as dependências do deezload: {}",
+            stderr.trim()
+        ));
+    }
+
+    app.emit(
+        "dep-progress",
+        DownloadProgress {
+            component: "deezload".to_string(),
+            progress: 1.0,
+            status: "deezload instalado com sucesso!".to_string(),
+        },
+    )
+    .ok();
+
+    Ok(DeezerDependencies {
+        python_path: python,
+        deezload_path: script_dest.to_string_lossy().to_string(),
+    })
+}
+
+/// Download the official Windows "embeddable package" for CPython into
+/// `<dir>/python`, enable `import site` (so pip works) and bootstrap pip.
+/// Returns the path to the extracted `python.exe`.
+#[cfg(windows)]
+fn install_embedded_python(app: &AppHandle, dir: &Path) -> Result<String, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const PYTHON_EMBED_URL: &str =
+        "https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip";
+    const GET_PIP_URL: &str = "https://bootstrap.pypa.io/get-pip.py";
+
+    let py_dir = dir.join("python");
+    fs::create_dir_all(&py_dir).map_err(|e| e.to_string())?;
+
+    app.emit(
+        "dep-progress",
+        DownloadProgress {
+            component: "deezload".to_string(),
+            progress: 0.2,
+            status: "Baixando o Python (uso interno do app)...".to_string(),
+        },
+    )
+    .ok();
+
+    let zip_dest = dir.join("python-embed.zip");
+    download_file(app, "deezload", PYTHON_EMBED_URL, &zip_dest)?;
+
+    app.emit(
+        "dep-progress",
+        DownloadProgress {
+            component: "deezload".to_string(),
+            progress: 0.5,
+            status: "Extraindo o Python...".to_string(),
+        },
+    )
+    .ok();
+
+    {
+        let zip_file =
+            File::open(&zip_dest).map_err(|e| format!("Falha ao abrir o zip do Python: {}", e))?;
+        let mut archive = ZipArchive::new(zip_file)
+            .map_err(|e| format!("Falha ao ler o zip do Python: {}", e))?;
+
+        // The embeddable package is a flat list of files (no directories).
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+            let file_name = match file
+                .enclosed_name()
+                .and_then(|p| p.file_name().map(|n| n.to_owned()))
+            {
+                Some(n) => n,
+                None => continue,
+            };
+            let out_path = py_dir.join(&file_name);
+            let mut out_file = File::create(&out_path)
+                .map_err(|e| format!("Falha ao extrair {}: {}", file_name.to_string_lossy(), e))?;
+            io::copy(&mut file, &mut out_file).map_err(|e| e.to_string())?;
+        }
+    }
+    fs::remove_file(&zip_dest).ok();
+
+    // The embeddable build ships with `import site` commented out, which also
+    // disables pip / site-packages. Re-enable it and make sure the
+    // `Lib\site-packages` directory (where pip installs) is on the path.
+    for entry in fs::read_dir(&py_dir).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("_pth") {
+            let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            let mut patched = content
+                .replace("#import site", "import site")
+                .replace("# import site", "import site");
+            if !patched.contains("Lib\\site-packages") {
+                patched = format!("Lib\\site-packages\n{}", patched);
+            }
+            fs::write(&path, patched).map_err(|e| e.to_string())?;
+        }
+    }
+    fs::create_dir_all(py_dir.join("Lib").join("site-packages")).ok();
+
+    let python_exe = py_dir.join("python.exe");
+    if !python_exe.is_file() {
+        return Err("O pacote do Python não continha python.exe.".to_string());
+    }
+
+    // Bootstrap pip into the embedded interpreter.
+    app.emit(
+        "dep-progress",
+        DownloadProgress {
+            component: "deezload".to_string(),
+            progress: 0.65,
+            status: "Configurando o pip...".to_string(),
+        },
+    )
+    .ok();
+
+    let get_pip = dir.join("get-pip.py");
+    download_file(app, "deezload", GET_PIP_URL, &get_pip)?;
+
+    let output = std::process::Command::new(&python_exe)
+        .arg(&get_pip)
+        .arg("--no-warn-script-location")
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("Falha ao configurar o pip: {}", e))?;
+    fs::remove_file(&get_pip).ok();
+
+    if !output.status.success() {
+        return Err(format!(
+            "Falha ao configurar o pip: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    Ok(python_exe.to_string_lossy().to_string())
 }
 
 pub fn download_dependencies(app: &AppHandle) -> Result<Dependencies, String> {

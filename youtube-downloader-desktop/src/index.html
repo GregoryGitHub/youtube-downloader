@@ -18,10 +18,16 @@
       <!-- Top Header -->
       <header class="app-header">
         <div class="brand">
-          <span class="brand-title">YDownloader</span>
-          <span class="brand-subtitle">Media Downloader</span>
+          <span class="brand-title" id="brand-title">YDownloader</span>
+          <span class="brand-subtitle" id="brand-subtitle">Media Downloader</span>
         </div>
-        
+
+        <!-- Mode Switch (YouTube / Deezer) -->
+        <div class="mode-switch" id="mode-switch" role="group" aria-label="Modo de download">
+          <button class="mode-option active" id="mode-youtube" data-mode="youtube">YouTube</button>
+          <button class="mode-option" id="mode-deezer" data-mode="deezer">Deezer</button>
+        </div>
+
         <!-- Navigation Tabs -->
         <nav class="nav-tabs">
           <button class="tab-btn active" id="tab-btn-download" data-tab="tab-download">
@@ -42,15 +48,23 @@
         <!-- Tab 1: Download -->
         <section class="tab-content active" id="tab-download">
           <div class="card card-hero">
-            <h1 class="card-heading">Insira o link do YouTube</h1>
-            <p class="card-subheading">Suporta links de vídeos individuais ou playlists inteiras.</p>
-            
+            <h1 class="card-heading" id="card-heading">Insira o link do YouTube</h1>
+            <p class="card-subheading" id="card-subheading">Suporta links de vídeos individuais ou playlists inteiras.</p>
+
+            <!-- Media type selector (YouTube only) -->
+            <div class="youtube-only media-type-group">
+              <div class="quality-options" id="media-type-options" role="group" aria-label="Tipo de mídia">
+                <button class="quality-option active" data-media="audio">Áudio (MP3)</button>
+                <button class="quality-option" data-media="video">Vídeo (MP4)</button>
+              </div>
+            </div>
+
             <div class="input-group">
-              <input 
-                type="text" 
-                id="url-input" 
-                placeholder="Insira a URL do vídeo ou playlist..." 
-                aria-label="URL do YouTube"
+              <input
+                type="text"
+                id="url-input"
+                placeholder="Insira a URL do vídeo ou playlist..."
+                aria-label="URL para baixar"
               />
             </div>
             
@@ -115,14 +129,55 @@
               </div>
             </div>
 
+            <!-- Deezer Account Card (only visible in Deezer mode) -->
+            <div class="card deezer-only" id="deezer-settings-card" hidden>
+              <h2 class="card-title">Conta Deezer</h2>
+              <p class="settings-desc">
+                Cole o cookie de sessão <strong>ARL</strong> de uma conta Deezer Premium. Ele autentica
+                os downloads via <strong>deezload</strong> e fica salvo apenas neste computador.
+              </p>
+
+              <div class="folder-picker-group">
+                <input
+                  type="password"
+                  id="deezer-arl-input"
+                  placeholder="Cole o valor do cookie arl..."
+                  autocomplete="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  aria-label="Cookie ARL do Deezer"
+                />
+                <button class="btn btn-secondary" id="btn-save-arl">Salvar</button>
+              </div>
+              <p class="settings-hint" id="deezer-arl-status">
+                Abra o Deezer no navegador logado, DevTools › Application › Cookies › <code>arl</code>.
+              </p>
+
+              <label class="toggle-label deezer-quality-label">Qualidade do áudio</label>
+              <div class="quality-options" id="deezer-quality-options">
+                <button class="quality-option" data-q="MP3_128">MP3 128</button>
+                <button class="quality-option active" data-q="MP3_320">MP3 320</button>
+                <button class="quality-option" data-q="FLAC">FLAC</button>
+              </div>
+              <p class="settings-hint">MP3 320 é o padrão. FLAC baixa sem perdas (arquivos bem maiores).</p>
+            </div>
+
             <!-- Destination Directory Card -->
             <div class="card">
               <h2 class="card-title">Destino dos Downloads</h2>
               <p class="settings-desc">Selecione onde as músicas MP3 baixadas serão salvas.</p>
-              
+
               <div class="folder-picker-group">
-                <input type="text" id="dest-folder-input" readonly aria-label="Pasta de Destino" />
+                <input type="text" id="dest-folder-input" readonly aria-label="Pasta de Músicas" />
                 <button class="btn btn-secondary" id="btn-select-folder">Escolher Pasta</button>
+              </div>
+
+              <div class="youtube-only video-folder-block">
+                <p class="settings-desc">Pasta onde os vídeos (MP4 em resolução máxima) serão salvos.</p>
+                <div class="folder-picker-group">
+                  <input type="text" id="video-folder-input" readonly aria-label="Pasta de Vídeos" />
+                  <button class="btn btn-secondary" id="btn-select-video-folder">Escolher Pasta</button>
+                </div>
               </div>
 
               <label class="toggle-switch-container settings-toggle-row">
@@ -158,6 +213,28 @@
               <button class="btn btn-primary" id="btn-install-deps" disabled>
                 Instalar Componentes
               </button>
+
+              <!-- Deezer component: deezload + Python (only visible in Deezer mode) -->
+              <div class="deezer-only deezload-deps" hidden>
+                <p class="settings-desc">
+                  O modo Deezer usa o <strong>deezload</strong> para baixar faixas, álbuns e playlists.
+                  Tudo (inclusive o Python) é baixado e configurado automaticamente aqui — não é
+                  preciso instalar nada no sistema.
+                </p>
+                <div class="dependency-status-list">
+                  <div class="dep-status-item">
+                    <span>Interpretador (Python 3):</span>
+                    <span id="status-python" class="status-badge loading">Verificando...</span>
+                  </div>
+                  <div class="dep-status-item">
+                    <span>Downloader (deezload):</span>
+                    <span id="status-deezload" class="status-badge loading">Verificando...</span>
+                  </div>
+                </div>
+                <button class="btn btn-primary" id="btn-install-deezer" disabled>
+                  Instalar deezload
+                </button>
+              </div>
 
               <div class="status-box hidden" id="dependency-status-box">
                 <span class="status-indicator animate-pulse"></span>
