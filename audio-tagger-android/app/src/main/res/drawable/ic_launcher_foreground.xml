@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A price tag with a music note: "tags for songs". Safe zone is the central 66dp. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- tag body -->
+    <path
+        android:fillColor="#FFB39DDB"
+        android:pathData="M30,36 L52,32 L78,58 L58,78 L32,52 Z" />
+    <!-- tag hole -->
+    <path
+        android:fillColor="#FF1E1B2E"
+        android:pathData="M42,42 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0" />
+    <!-- music note -->
+    <path
+        android:fillColor="#FF1E1B2E"
+        android:pathData="M58,46 L64,44 L64,62 A4.5,4 0 1,1 61,58.3 L61,49 L58,50 Z" />
+</vector>
