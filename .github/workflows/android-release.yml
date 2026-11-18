@@ -51,9 +51,8 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # The ubuntu runner already ships the Android SDK (ANDROID_HOME); missing
+      # platforms are downloaded by the Android Gradle plugin.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
