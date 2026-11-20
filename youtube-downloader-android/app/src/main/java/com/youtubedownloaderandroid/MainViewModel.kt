@@ -39,6 +39,8 @@ data class DownloadItem(
     val albumYear: String? = null,
     /** Document URI of the folder holding the finished MP3. */
     val folderUri: String? = null,
+    /** Content URI of the finished MP3 (MediaStore or SAF document), opened in the player. */
+    val fileUri: String? = null,
     /** Epoch millis before which an auto-retry must not start (backoff). */
     val nextAttemptAt: Long = 0L,
     /** Full catalogue metadata the user accepted for this album track. */

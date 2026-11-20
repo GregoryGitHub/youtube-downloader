@@ -41,12 +41,40 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 
+/** A link shared into the app; [seq] makes sharing the same link twice trigger again. */
+data class SharedLink(val url: String, val seq: Long)
+
 class MainActivity : ComponentActivity() {
+    private var sharedLink by mutableStateOf<SharedLink?>(null)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleShareIntent(intent)
+    }
+
+    /** "Compartilhar" from YouTube / YouTube Music sends the link as ACTION_SEND text. */
+    private fun handleShareIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND) return
+        val text = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
+        val link = extractYoutubeUrl(text)
+        if (link == null) {
+            android.widget.Toast.makeText(this, "O conteúdo compartilhado não é um link do YouTube.", android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        sharedLink = SharedLink(link, System.nanoTime())
+        // Consume it so a configuration change doesn't queue it again.
+        intent.action = null
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) handleShareIntent(intent)
         
         // Runtime Diagnostics to inspect library APIs and values
         try {
@@ -99,7 +127,8 @@ class MainActivity : ComponentActivity() {
             MyApplicationTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     YoutubeDownloaderApp(
-                        modifier = Modifier.padding(innerPadding)
+                        modifier = Modifier.padding(innerPadding),
+                        sharedLink = sharedLink
                     )
                 }
             }
@@ -111,6 +140,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun YoutubeDownloaderApp(
     modifier: Modifier = Modifier,
+    sharedLink: SharedLink? = null,
     viewModel: MainViewModel = viewModel()
 ) {
     val url by viewModel.url.collectAsState()
@@ -151,6 +181,14 @@ fun YoutubeDownloaderApp(
     }
 
     var selectedTab by remember { mutableStateOf(0) }
+
+    // Link shared from YouTube / YouTube Music: fill the field and analyse it right away.
+    LaunchedEffect(sharedLink) {
+        val link = sharedLink ?: return@LaunchedEffect
+        selectedTab = 0
+        viewModel.onUrlChange(link.url)
+        viewModel.queueUrl(context) { selectedTab = 1 }
+    }
 
     // SAF folder picker launcher
     val folderPickerLauncher = rememberLauncherForActivityResult(
@@ -502,6 +540,7 @@ fun QueueTab(
                 items(queue, key = { it.id }) { item ->
                     QueueItemCard(
                         item = item,
+                        onOpen = { openDownloadedFile(context, item) },
                         onOpenFolder = { openDownloadFolder(context, item) },
                         onCancel = { onRemove(item.id) },
                         onRetry = { onRetry(item.id) }
@@ -512,9 +551,11 @@ fun QueueTab(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun QueueItemCard(
     item: DownloadItem,
+    onOpen: () -> Unit = {},
     onOpenFolder: () -> Unit = {},
     onCancel: () -> Unit,
     onRetry: () -> Unit
@@ -542,7 +583,7 @@ fun QueueItemCard(
             .fillMaxWidth()
             .border(1.dp, Color(0xFF2F2F2F), RoundedCornerShape(10.dp))
             .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onOpenFolder),
+            .combinedClickable(onClick = onOpen, onLongClick = onOpenFolder),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF1F1F1F)),
         shape = RoundedCornerShape(10.dp)
     ) {
@@ -1074,3 +1115,40 @@ fun openDownloadFolder(context: android.content.Context, item: DownloadItem) {
     }
     android.widget.Toast.makeText(context, "Nenhum gerenciador de arquivos encontrado.", android.widget.Toast.LENGTH_SHORT).show()
 }
+
+/**
+ * Opens a finished MP3 in the device's default music player.
+ * Items saved before the file URI was recorded fall back to their folder.
+ */
+fun openDownloadedFile(context: android.content.Context, item: DownloadItem) {
+    val file = item.fileUri
+    if (item.status != DownloadStatus.COMPLETED) {
+        android.widget.Toast.makeText(context, "A música ainda não foi salva.", android.widget.Toast.LENGTH_SHORT).show()
+        return
+    }
+    if (file == null) {
+        openDownloadFolder(context, item)
+        return
+    }
+    val intent = Intent(Intent.ACTION_VIEW)
+        .setDataAndType(Uri.parse(file), "audio/mpeg")
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+    try {
+        context.startActivity(intent)
+    } catch (_: android.content.ActivityNotFoundException) {
+        android.widget.Toast.makeText(context, "Nenhum player de música encontrado.", android.widget.Toast.LENGTH_SHORT).show()
+    } catch (_: SecurityException) {
+        // File moved/deleted or permission revoked: show where it should be.
+        openDownloadFolder(context, item)
+    }
+}
+
+private val youtubeUrlRegex = Regex("""https?://[^\s]+""")
+private val youtubeHosts = setOf("youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be")
+
+/** First YouTube / YouTube Music URL inside shared text (which may also contain the title), or null. */
+fun extractYoutubeUrl(text: String): String? =
+    youtubeUrlRegex.findAll(text).map { it.value.trimEnd('.', ',', ')') }.firstOrNull { candidate ->
+        val host = runCatching { Uri.parse(candidate).host?.lowercase() }.getOrNull()
+        host != null && host in youtubeHosts
+    }

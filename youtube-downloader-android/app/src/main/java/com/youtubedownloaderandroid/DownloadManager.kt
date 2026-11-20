@@ -160,7 +160,7 @@ class DownloadManager(private val context: Context) {
         trackMeta: TrackMeta? = null,
         isLastAttempt: Boolean = true,
         onProgress: (Float, String, String) -> Unit
-    ): Result<String> = withContext(Dispatchers.IO) {
+    ): Result<SavedFile> = withContext(Dispatchers.IO) {
         val workDir = workDirFor(context, itemId)
         try {
             if (!workDir.exists()) workDir.mkdirs()
@@ -202,14 +202,14 @@ class DownloadManager(private val context: Context) {
             val folders = listOfNotNull(artist, folderName).map { sanitizeFilename(it) }.filter { it.isNotEmpty() }
 
             onProgress(100f, "N/A", "[move] Copiando para a pasta de destino...")
-            val folderUri = if (folderMode == "custom" && !customFolderUri.isNullOrEmpty()) {
+            val saved = if (folderMode == "custom" && !customFolderUri.isNullOrEmpty()) {
                 moveToCustomFolder(mp3, customFolderUri, folders)
             } else {
                 moveToPublicMusicFolder(mp3, folders)
             }
 
             workDir.deleteRecursively()
-            Result.success(folderUri)
+            Result.success(saved)
         } catch (e: Exception) {
             // Work folder is intentionally kept so the retry can reuse it.
             Log.e(TAG, "[$itemId] Download failed", e)
@@ -412,8 +412,8 @@ class DownloadManager(private val context: Context) {
         return name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().trimEnd('.').trim()
     }
 
-    /** @return document URI of the folder that received the file. */
-    private fun moveToCustomFolder(file: File, treeUriString: String, folders: List<String>): String {
+    /** @return document URIs of the folder that received the file and of the file itself. */
+    private fun moveToCustomFolder(file: File, treeUriString: String, folders: List<String>): SavedFile {
         val treeUri = Uri.parse(treeUriString)
         val rootDir = DocumentFile.fromTreeUri(context, treeUri) ?: throw Exception("Não foi possível acessar a pasta selecionada.")
 
@@ -438,11 +438,11 @@ class DownloadManager(private val context: Context) {
             newFile.delete()
             throw e
         }
-        return pickedDir.uri.toString()
+        return SavedFile(folderUri = pickedDir.uri.toString(), fileUri = newFile.uri.toString())
     }
 
-    /** @return document URI (external storage provider) of the folder that received the file. */
-    private fun moveToPublicMusicFolder(file: File, folders: List<String>): String {
+    /** @return folder document URI (external storage provider) and MediaStore URI of the file. */
+    private fun moveToPublicMusicFolder(file: File, folders: List<String>): SavedFile {
         val resolver = context.contentResolver
         val relativePath = (listOf("Music") + folders).joinToString("/", postfix = "/")
 
@@ -491,10 +491,11 @@ class DownloadManager(private val context: Context) {
             resolver.delete(uri, null, null)
             throw e
         }
-        return DocumentsContract.buildDocumentUri(
+        val folderUri = DocumentsContract.buildDocumentUri(
             "com.android.externalstorage.documents",
             "primary:" + relativePath.trimEnd('/')
         ).toString()
+        return SavedFile(folderUri = folderUri, fileUri = uri.toString())
     }
 
     suspend fun getVideoInfo(url: String): VideoInfo? = withContext(Dispatchers.IO) {
@@ -506,3 +507,6 @@ class DownloadManager(private val context: Context) {
         }
     }
 }
+
+/** Where a finished download ended up: its folder (for the file manager) and the MP3 itself (for the player). */
+data class SavedFile(val folderUri: String, val fileUri: String)

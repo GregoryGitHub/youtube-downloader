@@ -277,11 +277,11 @@ object DownloadQueueManager {
                     updateItemProgress(item.id, progress / 100f, eta, line)
                 }
 
-                result.onSuccess { folderUri ->
+                result.onSuccess { saved ->
                     updateItem(item.id) {
                         it.copy(
                             status = DownloadStatus.COMPLETED, progress = 1f, statusDetail = "Concluído",
-                            errorMessage = null, folderUri = folderUri
+                            errorMessage = null, folderUri = saved.folderUri, fileUri = saved.fileUri
                         )
                     }
                 }.onFailure {
@@ -379,6 +379,7 @@ object DownloadQueueManager {
                     put("retryCount", item.retryCount)
                     put("isAlbum", item.isAlbum)
                     item.folderUri?.let { put("folderUri", it) }
+                    item.fileUri?.let { put("fileUri", it) }
                     item.albumYear?.let { put("albumYear", it) }
                     item.errorMessage?.let { put("errorMessage", it) }
                     item.trackMeta?.let { put("trackMeta", it.toJson()) }
@@ -418,6 +419,7 @@ object DownloadQueueManager {
                     retryCount = o.optInt("retryCount", 0),
                     isAlbum = o.optBoolean("isAlbum", false),
                     folderUri = if (o.has("folderUri")) o.getString("folderUri") else null,
+                    fileUri = if (o.has("fileUri")) o.getString("fileUri") else null,
                     albumYear = if (o.has("albumYear")) o.getString("albumYear") else null,
                     trackMeta = o.optJSONObject("trackMeta")?.let { runCatching { TrackMeta.fromJson(it) }.getOrNull() }
                 )
