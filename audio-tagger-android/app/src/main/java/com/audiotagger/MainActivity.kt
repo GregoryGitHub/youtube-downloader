@@ -127,6 +127,9 @@ private fun HomeScreen(vm: EditorViewModel) {
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         vm.openFiles(uris)
     }
+    val singlePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { vm.openFiles(listOf(it)) }
+    }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
             Modifier.fillMaxSize().padding(24.dp),
@@ -152,7 +155,14 @@ private fun HomeScreen(vm: EditorViewModel) {
                 onClick = { filePicker.launch(arrayOf("audio/*")) },
                 modifier = Modifier.fillMaxWidth().widthIn(max = 360.dp),
             ) {
-                Text("Escolher arquivos")
+                Text("Escolher vários arquivos")
+            }
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = { singlePicker.launch(arrayOf("audio/*")) },
+                modifier = Modifier.fillMaxWidth().widthIn(max = 360.dp),
+            ) {
+                Text("Abrir um arquivo")
             }
             Spacer(Modifier.height(24.dp))
             Text(
